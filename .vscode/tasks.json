@@ -1,0 +1,22 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Start Next.js dev server",
+            "type": "npm",
+            "script": "dev",
+            "isBackground": true,
+            "problemMatcher": {
+                "owner": "nextjs",
+                "pattern": {
+                    "regexp": "^$"
+                },
+                "background": {
+                    "activeOnStart": true,
+                    "beginsPattern": ".*next dev.*",
+                    "endsPattern": ".*Ready in .*"
+                }
+            }
+        }
+    ]
+}
