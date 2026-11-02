@@ -112,12 +112,15 @@ Only the `admin` role can add, edit, or remove equipment. Equipment changes are 
 - Shared member/admin feedback discussions with replies and administrator-managed status updates.
 - Borrowing and reservation requests linked to the existing `borrowers`, `borrowings`, `borrowing_items`, and `equipment` records, with administrator/property-custodian review and return confirmation. Available amounts decrease for active borrowing requests and return after staff confirm the return; overlapping requests are accepted only up to the equipment quantity.
 - Borrowings follow `requested → approved → released → returned`; release and return record the responsible staff member, timestamps, condition, and optional private photo. Damage and loss reports require manager resolution. A daily job flags overdue items, shows staff borrower contact details, and blocks borrowers with overdue equipment from submitting borrowing or reservation requests.
+- In-app notifications cover request decisions, releases, returns, reservation expiry, account review, and daily due-soon/overdue reminders. Borrowers must accept the currently published, versioned agreement before submitting a request; the seeded agreement is clearly marked as placeholder text.
 - Borrowers can cancel pending requests, staff must provide a decline reason, and managers can configure the reservation pickup grace period (1–1440 minutes; 30 minutes by default). Unpicked approved reservations expire automatically.
 - Member activity, manager request queues, borrowing history, and CSV report export.
 - Installable PWA manifest and an offline page. Private workspace data is never cached by the service worker.
 
 ## Notes
 
+- After reviewing the SQL, apply [`supabase/migrations/202611030005_notifications_and_borrower_agreement.sql`](./supabase/migrations/202611030005_notifications_and_borrower_agreement.sql) after migration 004. It builds on `public.notifications`, schedules daily notification/retention maintenance, and adds versioned borrower agreement acceptance. Replace the starter agreement with school-approved text by publishing a new version from the administrator's Members & roles page.
+- Run [`supabase/tests/notifications_and_borrower_agreement.sql`](./supabase/tests/notifications_and_borrower_agreement.sql) through the database test workflow after applying the migration.
 - The publishable Supabase key is intended for browser use. Never put a Supabase service-role key in `.env.local` or client code.
 - Borrowing and reservation requests require an active borrower row linked to the signed-in account by `user_id`.
 - If Supabase reports missing tables or functions, ensure the migration ran successfully in the project that matches `.env.local`.

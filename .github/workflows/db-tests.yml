@@ -34,7 +34,7 @@ jobs:
       - name: Reset local database
         run: supabase --workdir "$RUNNER_TEMP/rmmc-db-tests" db reset
 
-      - name: Create active admin and student fixtures
+      - name: Create active admin, student, and pending-account fixtures
         env:
           SUPABASE_WORKDIR: ${{ runner.temp }}/rmmc-db-tests
         run: |
@@ -70,6 +70,19 @@ jobs:
           where email = 'ci-student@example.com'
             and user_id = (select id from auth.users where email = 'ci-student@example.com');
 
+          insert into public.borrower_agreement_acceptances (user_id, version_id)
+          select u.id, v.version_id
+          from auth.users u
+          cross join lateral (
+            select version_id
+            from public.borrower_agreement_versions
+            where active
+            order by version_number desc
+            limit 1
+          ) v
+          where u.email = 'ci-student@example.com'
+          on conflict (user_id, version_id) do nothing;
+
           do $$
           begin
             if not exists (
@@ -93,6 +106,14 @@ jobs:
           end;
           $$;
           SQL
+
+          curl --fail --silent --show-error \
+            --request POST "$API_URL/auth/v1/admin/users" \
+            --header "apikey: $SERVICE_ROLE_KEY" \
+            --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"email":"ci-pending@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Pending","course":"CI"}}' \
+            >/dev/null
 
       - name: Run every SQL test
         env:

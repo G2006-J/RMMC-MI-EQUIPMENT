@@ -515,6 +515,11 @@ export default function Home() {
   const [pendingAccounts, setPendingAccounts] = useState([]);
   const [equipmentAudit, setEquipmentAudit] = useState([]);
   const [feedbackThreads, setFeedbackThreads] = useState([]);
+  const [notifications, setNotifications] = useState([]);
+  const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [notificationOpen, setNotificationOpen] = useState(false);
+  const [activeAgreement, setActiveAgreement] = useState(null);
+  const [acceptedAgreementVersion, setAcceptedAgreementVersion] = useState(null);
   const [borrowerId, setBorrowerId] = useState(null);
   const [recoveryMode, setRecoveryMode] = useState(false);
   const [view, setView] = useState("overview");
@@ -556,6 +561,10 @@ export default function Home() {
       setPendingAccounts([]);
       setEquipmentAudit([]);
       setFeedbackThreads([]);
+      setNotifications([]);
+      setUnreadNotificationCount(0);
+      setActiveAgreement(null);
+      setAcceptedAgreementVersion(null);
       setBorrowerId(null);
       setError(profileResult.error
         ? `Your profile role could not be loaded: ${profileResult.error.message}`
@@ -575,11 +584,23 @@ export default function Home() {
     setProfile(currentProfile);
 
     if (currentProfile.account_status !== "active") {
+      const [inactiveNotificationsResult, inactiveUnreadResult] = await Promise.all([
+        client.from("notifications").select("*").order("created_at", { ascending: false }).limit(50),
+        client.from("notifications").select("notification_id", { count: "exact", head: true }).eq("is_read", false),
+      ]);
+      if (inactiveNotificationsResult.error || inactiveUnreadResult.error) {
+        setError(`Account notifications could not be loaded: ${inactiveNotificationsResult.error?.message || inactiveUnreadResult.error?.message}`);
+      } else {
+        setNotifications(inactiveNotificationsResult.data || []);
+        setUnreadNotificationCount(inactiveUnreadResult.count || 0);
+      }
       setEquipment([]);
       setCategoryOptions([]);
       setBorrowings([]);
       setCurrentlyBorrowed([]);
       setReservations([]);
+      setActiveAgreement(null);
+      setAcceptedAgreementVersion(null);
       setMembers([]);
       setPendingAccounts([]);
       setEquipmentAudit([]);
@@ -602,7 +623,21 @@ export default function Home() {
       ? reservationQuery.in("status", ["pending", "approved"])
       : reservationQuery;
 
-    const [equipmentResult, categoryResult, borrowingResult, availableQuantitiesResult, borrowerResult, reservationResult, feedbackResult, repliesResult, currentlyBorrowedResult] = await Promise.all([
+    const [
+      equipmentResult,
+      categoryResult,
+      borrowingResult,
+      availableQuantitiesResult,
+      borrowerResult,
+      reservationResult,
+      feedbackResult,
+      repliesResult,
+      currentlyBorrowedResult,
+      notificationsResult,
+      unreadNotificationsResult,
+      activeAgreementResult,
+      agreementAcceptancesResult,
+    ] = await Promise.all([
       client.from("equipment").select("*, categories(category_name)").is("deleted_at", null).order("equipment_name"),
       client.from("categories").select("category_id, category_name").order("category_name"),
       scopedBorrowingQuery,
@@ -614,9 +649,43 @@ export default function Home() {
       isEquipmentManager
         ? client.rpc("list_equipment_tracking_records")
         : Promise.resolve({ data: [], error: null }),
+      client.from("notifications").select("*").order("created_at", { ascending: false }).limit(50),
+      client.from("notifications").select("notification_id", { count: "exact", head: true }).eq("is_read", false),
+      client.from("borrower_agreement_versions").select("version_id, version_number, title, body_text")
+        .eq("active", true).lte("published_at", new Date().toISOString()).order("version_number", { ascending: false }).limit(1).maybeSingle(),
+      client.from("borrower_agreement_acceptances").select("version_id").eq("user_id", currentUser.id),
     ]);
 
     const errors = [];
+    if (notificationsResult.error) {
+      errors.push(`Notifications could not be loaded: ${notificationsResult.error.message}`);
+      setNotifications([]);
+    } else {
+      setNotifications(notificationsResult.data || []);
+    }
+    if (unreadNotificationsResult.error) {
+      errors.push(`Unread notification count could not be loaded: ${unreadNotificationsResult.error.message}`);
+      setUnreadNotificationCount(0);
+    } else {
+      setUnreadNotificationCount(unreadNotificationsResult.count || 0);
+    }
+    if (activeAgreementResult.error) {
+      errors.push(`Borrower agreement could not be loaded: ${activeAgreementResult.error.message}`);
+      setActiveAgreement(null);
+    } else {
+      setActiveAgreement(activeAgreementResult.data || null);
+    }
+    if (agreementAcceptancesResult.error) {
+      errors.push(`Agreement acceptance could not be loaded: ${agreementAcceptancesResult.error.message}`);
+      setAcceptedAgreementVersion(null);
+    } else {
+      setAcceptedAgreementVersion(
+        (agreementAcceptancesResult.data || []).some((acceptance) =>
+          Number(acceptance.version_id) === Number(activeAgreementResult.data?.version_id))
+          ? activeAgreementResult.data?.version_id ?? null
+          : null,
+      );
+    }
     if (currentlyBorrowedResult.error) {
       errors.push(`Equipment tracking records could not be loaded: ${currentlyBorrowedResult.error.message}`);
       setCurrentlyBorrowed([]);
@@ -819,6 +888,10 @@ export default function Home() {
         setPendingAccounts([]);
         setEquipmentAudit([]);
         setFeedbackThreads([]);
+        setNotifications([]);
+        setUnreadNotificationCount(0);
+        setActiveAgreement(null);
+        setAcceptedAgreementVersion(null);
         setLoading(false);
       }
     });
@@ -906,31 +979,78 @@ export default function Home() {
     event.preventDefault();
     if (!modal || !supabase || !user) return;
     const form = new FormData(event.currentTarget);
+    const requiresAgreement = profile?.role === "staff"
+      && activeAgreement
+      && Number(acceptedAgreementVersion) !== Number(activeAgreement.version_id);
+    if (requiresAgreement && !form.get("accept_agreement")) {
+      setError("Read and accept the current borrower agreement before submitting a request.");
+      return;
+    }
+    if (profile?.role === "staff" && !activeAgreement) {
+      setError("The current borrower agreement could not be loaded. Please contact an administrator.");
+      return;
+    }
     const common = {
       p_equipment_id: modal.item.id,
       p_purpose: String(form.get("purpose") || "").trim(),
       p_destination: String(form.get("use_location") || "").trim(),
       p_quantity: Number(form.get("amount")),
     };
+    const submitWithAgreement = async (request) => {
+      if (requiresAgreement) {
+        const acceptanceResult = await supabase.rpc("accept_borrower_agreement", {
+          p_version_id: activeAgreement.version_id,
+        });
+        if (acceptanceResult.error) throw acceptanceResult.error;
+      }
+      return request();
+    };
     if (modal.kind === "reservation") {
-      await runAction(() => supabase.rpc("request_equipment_reservation", {
+      await runAction(() => submitWithAgreement(() => supabase.rpc("request_equipment_reservation", {
         ...common,
         p_start_date: form.get("start_date"),
         p_end_date: form.get("end_date"),
         p_start_time: form.get("start_time"),
         p_end_time: form.get("end_time"),
-      }), "Reservation request submitted.");
+      })), "Reservation request submitted.");
     } else {
       const returnAt = new Date(`${form.get("end_date")}T${form.get("end_time")}`);
       if (Number.isNaN(returnAt.getTime())) {
         setError("Choose a valid expected return date and time.");
         return;
       }
-      await runAction(() => supabase.rpc("request_equipment_borrowing", {
+      await runAction(() => submitWithAgreement(() => supabase.rpc("request_equipment_borrowing", {
         ...common,
         p_expected_return_date: returnAt.toISOString(),
-      }), "Borrowing request submitted.");
+      })), "Borrowing request submitted.");
     }
+  }
+
+  async function publishAgreement(event) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    const title = String(form.get("agreement_title") || "").trim();
+    const bodyText = String(form.get("agreement_body") || "").trim();
+    const published = await runAction(
+      () => supabase.rpc("publish_borrower_agreement", { p_title: title, p_body_text: bodyText }),
+      "A new borrower agreement version was published.",
+    );
+    if (published) formElement.reset();
+  }
+
+  async function markNotificationRead(notificationId) {
+    await runAction(
+      () => supabase.rpc("mark_notification_read", { p_notification_id: notificationId }),
+      "Notification marked as read.",
+    );
+  }
+
+  async function markAllNotificationsRead() {
+    await runAction(
+      () => supabase.rpc("mark_all_notifications_read"),
+      "All notifications marked as read.",
+    );
   }
 
   async function uploadEquipmentImage(form) {
@@ -1185,6 +1305,17 @@ export default function Home() {
           <p>{isPending
             ? "Your account is awaiting approval from an administrator or property custodian. You cannot submit borrowing or reservation requests until it is approved."
             : "This account is not active. Contact an administrator or property custodian if you believe this is a mistake."}</p>
+          {error && <p className="feedback feedback-error" role="alert">{error}</p>}
+          {notifications.length > 0 && <section className="guard-notifications" aria-label="Account notifications">
+            <div className="notification-panel-heading">
+              <div><strong>Notifications</strong><small>{unreadNotificationCount} unread</small></div>
+              <button type="button" onClick={markAllNotificationsRead} disabled={!unreadNotificationCount || busy}>Mark all read</button>
+            </div>
+            <ul>{notifications.map((item) => <li className={item.is_read ? "" : "notification-unread"} key={item.notification_id}>
+              <div><strong>{item.title}</strong><p>{item.message}</p><time dateTime={item.created_at}>{dateTimeLabel(item.created_at)}</time></div>
+              {!item.is_read && <button type="button" onClick={() => markNotificationRead(item.notification_id)} disabled={busy}>Mark read</button>}
+            </li>)}</ul>
+          </section>}
           <button className="button-secondary" type="button" onClick={signOut}>Sign out</button>
         </div>
       </main>
@@ -1265,6 +1396,36 @@ export default function Home() {
           <span className="topbar-context">RMMC-MI <i>/</i> Equipment services</span>
           <div className="top-actions">
             <InstallAppButton />
+            <div className="notification-wrap">
+              <button
+                className="notification-trigger"
+                type="button"
+                aria-label={`Notifications${unreadNotificationCount ? `, ${unreadNotificationCount} unread` : ""}`}
+                aria-expanded={notificationOpen}
+                onClick={() => setNotificationOpen((open) => !open)}
+              >
+                <Bell size={18} aria-hidden="true" />
+                {unreadNotificationCount > 0 && <span className="notification-count">{unreadNotificationCount > 99 ? "99+" : unreadNotificationCount}</span>}
+              </button>
+              {notificationOpen && (
+                <section className="notification-panel" aria-label="Notifications">
+                  <div className="notification-panel-heading">
+                    <div><strong>Notifications</strong><small>{unreadNotificationCount} unread</small></div>
+                    <button type="button" onClick={markAllNotificationsRead} disabled={!unreadNotificationCount || busy}>Mark all read</button>
+                  </div>
+                  {!notifications.length ? <p className="notification-empty">You’re all caught up.</p> : (
+                    <ul>
+                      {notifications.map((item) => (
+                        <li className={item.is_read ? "" : "notification-unread"} key={item.notification_id}>
+                          <div><strong>{item.title}</strong><p>{item.message}</p><time dateTime={item.created_at}>{dateTimeLabel(item.created_at)}</time></div>
+                          {!item.is_read && <button type="button" onClick={() => markNotificationRead(item.notification_id)} disabled={busy}>Mark read</button>}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </section>
+              )}
+            </div>
             <div className="profile-menu-wrap">
               <button className="user-chip profile-menu-trigger" type="button" title={`${displayName} · ${userRole}`} aria-label="Open user account menu" aria-expanded={profileMenuOpen} onClick={() => setProfileMenuOpen((open) => !open)}>
                 <ProfileAvatar name={displayName} photoUrl={profile.profile_photo_url} />
@@ -1419,6 +1580,16 @@ export default function Home() {
                 <span className="record-count">{members.length} accounts</span>
               </div>
               <MemberTable members={members} currentUserId={user.id} runAction={runAction} supabase={supabase} />
+              <section className="agreement-publisher">
+                <div className="section-title"><div><h2>Borrower agreement</h2><p>Publishing a new version requires borrowers to accept it before their next request.</p></div>
+                  {activeAgreement && <span className="record-count">Current version {activeAgreement.version_number}</span>}
+                </div>
+                <form className="modal-form agreement-publisher-form" onSubmit={publishAgreement}>
+                  <label><span>New agreement title</span><input name="agreement_title" maxLength={200} required /></label>
+                  <label><span>Agreement text</span><textarea name="agreement_body" rows="8" maxLength={20000} required /></label>
+                  <button className="button-primary" type="submit" disabled={busy}>Publish new version <Check size={15} /></button>
+                </form>
+              </section>
             </>
           )}
 
@@ -1517,8 +1688,17 @@ export default function Home() {
                     <label><span>Expected return date</span><input type="date" name="end_date" min={new Date().toISOString().slice(0, 10)} defaultValue={new Date(Date.now() + 86400000).toISOString().slice(0, 10)} required /></label>
                     <label><span>Expected return time</span><input type="time" name="end_time" defaultValue="17:00" required /></label>
                   </div>}
+                  {profile?.role === "staff" && (activeAgreement
+                    ? Number(acceptedAgreementVersion) !== Number(activeAgreement.version_id)
+                      ? <section className="borrower-agreement">
+                        <div><strong>{activeAgreement.title}</strong><small>Agreement version {activeAgreement.version_number}</small></div>
+                        <p>{activeAgreement.body_text}</p>
+                        <label className="checkbox-label"><input name="accept_agreement" type="checkbox" required /><span>I have read and agree to the borrower agreement above.</span></label>
+                      </section>
+                      : <p className="agreement-accepted"><CheckCircle2 size={16} /> You have accepted the current borrower agreement.</p>
+                    : <p className="feedback feedback-error" role="alert">The current borrower agreement is unavailable. Requests are disabled until staff publish or restore it.</p>)}
                   <div className="modal-info"><ShieldCheck size={19} /><div><strong>Requests are reviewed by the equipment team</strong><span>You’ll see status updates in My equipment.</span></div></div>
-                  <div className="modal-actions"><button type="button" className="button-secondary" onClick={() => setModal(null)} disabled={busy}>Cancel</button><button className="button-primary" disabled={busy} type="submit">{busy ? "Submitting…" : "Submit request"} <ArrowUpRight size={15} /></button></div>
+                  <div className="modal-actions"><button type="button" className="button-secondary" onClick={() => setModal(null)} disabled={busy}>Cancel</button><button className="button-primary" disabled={busy || (profile?.role === "staff" && !activeAgreement)} type="submit">{busy ? "Submitting…" : "Submit request"} <ArrowUpRight size={15} /></button></div>
                 </form>
               </>
             )}
