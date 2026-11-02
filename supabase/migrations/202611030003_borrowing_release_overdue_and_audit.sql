@@ -1,3 +1,8 @@
+alter table public.equipment
+  add column if not exists out_of_service_quantity integer not null default 0,
+  add constraint equipment_out_of_service_quantity_check
+    check (out_of_service_quantity >= 0 and out_of_service_quantity <= quantity);
+
 alter table public.borrowings
   drop constraint if exists borrowings_transaction_status_check;
 
@@ -345,7 +350,9 @@ set search_path = ''
 as $$
 declare
   v_quantity integer;
+  v_out_of_service_quantity integer;
   v_status text;
+  v_usable_quantity integer;
 begin
   if (select auth.uid()) is null
     or not public.is_verified_active_user()
@@ -357,13 +364,14 @@ begin
     return false;
   end if;
 
-  select e.quantity, e.availability_status
-    into v_quantity, v_status
+  select e.quantity, e.out_of_service_quantity, e.availability_status
+    into v_quantity, v_out_of_service_quantity, v_status
   from public.equipment e
   where e.equipment_id = p_equipment_id and e.deleted_at is null;
+  v_usable_quantity := v_quantity - v_out_of_service_quantity;
   if not found or p_requested_quantity is null or p_requested_quantity < 1
     or p_start_date is null or p_end_date is null or p_end_date < p_start_date
-    or v_quantity < p_requested_quantity or v_status in ('maintenance', 'retired') then
+    or v_usable_quantity < p_requested_quantity or v_status in ('maintenance', 'retired') then
     return false;
   end if;
 
@@ -378,7 +386,7 @@ begin
       from public.borrowings b
       join public.borrowing_items bi using (borrowing_id)
       where bi.equipment_id = p_equipment_id
-        and b.transaction_status in ('requested', 'approved', 'released')
+        and b.transaction_status in ('approved', 'released')
         and (p_exclude_borrowing_id is null or b.borrowing_id <> p_exclude_borrowing_id)
       union all
       select r.start_date, r.end_date, r.quantity
@@ -399,7 +407,7 @@ begin
       select coalesce(sum(o.quantity), 0)
       from occupied o
       where o.start_date <= d.occupied_on and o.end_date >= d.occupied_on
-    ) + p_requested_quantity > v_quantity
+    ) + p_requested_quantity > v_usable_quantity
   );
 end;
 $$;
@@ -421,16 +429,20 @@ set search_path = ''
 as $$
 declare
   v_quantity integer;
+  v_out_of_service_quantity integer;
   v_status text;
+  v_usable_quantity integer;
 begin
   if p_requested_quantity is null or p_requested_quantity < 1
     or p_start_date is null or p_end_date is null or p_end_date < p_start_date then
     return false;
   end if;
-  select e.quantity, e.availability_status into v_quantity, v_status
+  select e.quantity, e.out_of_service_quantity, e.availability_status
+    into v_quantity, v_out_of_service_quantity, v_status
   from public.equipment e
   where e.equipment_id = p_equipment_id and e.deleted_at is null;
-  if not found or v_quantity < p_requested_quantity or v_status in ('maintenance', 'retired') then
+  v_usable_quantity := v_quantity - v_out_of_service_quantity;
+  if not found or v_usable_quantity < p_requested_quantity or v_status in ('maintenance', 'retired') then
     return false;
   end if;
 
@@ -463,7 +475,7 @@ begin
       select coalesce(sum(o.quantity), 0)
       from occupied o
       where o.start_date <= d.occupied_on and o.end_date >= d.occupied_on
-    ) + p_requested_quantity > v_quantity
+    ) + p_requested_quantity > v_usable_quantity
   );
 end;
 $$;
@@ -480,7 +492,10 @@ as $$
   select e.equipment_id,
     case
       when e.availability_status in ('maintenance', 'retired') then 0
-      else greatest(0, e.quantity - coalesce(occupied.amount, 0))
+      else greatest(
+        0,
+        e.quantity - e.out_of_service_quantity - coalesce(occupied.amount, 0)
+      )
     end::integer
   from public.equipment e
   left join lateral (
@@ -602,13 +617,14 @@ begin
 
   update public.equipment e
   set availability_status = case
+    when e.quantity - e.out_of_service_quantity <= 0 then 'maintenance'
     when coalesce((
       select sum(bi.quantity)
       from public.borrowing_items bi
       join public.borrowings b using (borrowing_id)
       where bi.equipment_id = e.equipment_id
         and b.transaction_status in ('approved', 'released')
-    ), 0) >= e.quantity then 'borrowed'
+    ), 0) >= e.quantity - e.out_of_service_quantity then 'borrowed'
     else 'available'
   end
   where e.availability_status in ('available', 'borrowed')
@@ -640,6 +656,15 @@ begin
   if v_borrower is null then
     raise exception 'Your borrower account is not active.';
   end if;
+
+  perform e.equipment_id
+  from public.equipment e
+  join public.borrowing_items bi on bi.equipment_id = e.equipment_id
+  join public.borrowings b on b.borrowing_id = bi.borrowing_id
+  where b.borrowing_id = p_borrowing_id
+    and b.borrower_id = v_borrower
+  order by e.equipment_id
+  for update of e;
 
   select b.transaction_status into v_status
   from public.borrowings b
@@ -675,6 +700,14 @@ begin
     or not exists (select 1 from public.profiles p where p.id = v_actor and p.role = 'staff') then
     raise exception 'Sign in with an active borrower account to request a return.';
   end if;
+  perform e.equipment_id
+  from public.equipment e
+  join public.borrowing_items bi on bi.equipment_id = e.equipment_id
+  join public.borrowings b on b.borrowing_id = bi.borrowing_id
+  where b.borrowing_id = p_borrowing_id
+    and b.borrower_id = public.current_borrower_id()
+  order by e.equipment_id
+  for update of e;
   select b.transaction_status into v_status
   from public.borrowings b
   where b.borrowing_id = p_borrowing_id
@@ -787,6 +820,96 @@ $$;
 revoke all on function public.release_equipment_borrowing(bigint, text, text, text) from public, anon;
 grant execute on function public.release_equipment_borrowing(bigint, text, text, text) to authenticated;
 
+create or replace function public.mark_legacy_issued_borrowings_released()
+returns integer
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor uuid := (select auth.uid());
+  v_equipment_id bigint;
+  v_equipment_ids bigint[] := '{}'::bigint[];
+  v_borrowing_id bigint;
+  v_released integer := 0;
+begin
+  if v_actor is null or not public.is_equipment_manager_user() then
+    raise exception 'Only administrators and property custodians can reconcile legacy issued equipment.';
+  end if;
+
+  for v_equipment_id in
+    select e.equipment_id
+    from public.equipment e
+    where exists (
+      select 1
+      from public.borrowing_items bi
+      join public.borrowings b using (borrowing_id)
+      where bi.equipment_id = e.equipment_id
+        and b.transaction_status = 'approved'
+        and bi.item_status = 'approved'
+        and bi.issued_at is not null
+    )
+    order by e.equipment_id
+    for update of e
+  loop
+    v_equipment_ids := array_append(v_equipment_ids, v_equipment_id);
+  end loop;
+
+  for v_borrowing_id in
+    select b.borrowing_id
+    from public.borrowings b
+    where b.transaction_status = 'approved'
+      and exists (
+        select 1 from public.borrowing_items bi
+        where bi.borrowing_id = b.borrowing_id
+          and bi.issued_at is not null
+      )
+      and not exists (
+        select 1 from public.borrowing_items bi
+        where bi.borrowing_id = b.borrowing_id
+          and (bi.item_status <> 'approved' or bi.issued_at is null)
+      )
+    order by b.borrowing_id
+    for update
+  loop
+    update public.borrowing_items
+    set item_status = 'released',
+        released_by = v_actor,
+        released_at = coalesce(issued_at, now())
+    where borrowing_id = v_borrowing_id
+      and item_status = 'approved'
+      and issued_at is not null;
+
+    update public.borrowings
+    set transaction_status = 'released',
+        updated_at = now()
+    where borrowing_id = v_borrowing_id
+      and transaction_status = 'approved';
+
+    v_released := v_released + 1;
+  end loop;
+
+  update public.equipment e
+  set availability_status = case
+    when e.availability_status in ('maintenance', 'retired') then e.availability_status
+    when e.quantity - e.out_of_service_quantity <= 0 then 'maintenance'
+    when coalesce((
+      select sum(bi.quantity)
+      from public.borrowing_items bi
+      join public.borrowings b using (borrowing_id)
+      where bi.equipment_id = e.equipment_id
+        and b.transaction_status in ('approved', 'released')
+    ), 0) >= e.quantity - e.out_of_service_quantity then 'borrowed'
+    else 'available'
+  end
+  where e.equipment_id = any(v_equipment_ids);
+
+  return v_released;
+end;
+$$;
+revoke all on function public.mark_legacy_issued_borrowings_released() from public, anon;
+grant execute on function public.mark_legacy_issued_borrowings_released() to authenticated;
+
 drop function if exists public.complete_equipment_return(bigint);
 create function public.complete_equipment_return(
   p_borrowing_id bigint,
@@ -876,10 +999,24 @@ begin
         when p_condition = 'lost' then greatest(0, e.quantity - bi.quantity)
         else e.quantity
       end,
+      out_of_service_quantity = case
+        when p_condition = 'damaged' then least(
+          e.quantity,
+          e.out_of_service_quantity + bi.quantity
+        )
+        when p_condition = 'lost' then least(
+          e.out_of_service_quantity,
+          greatest(0, e.quantity - bi.quantity)
+        )
+        else e.out_of_service_quantity
+      end,
       availability_status = case
-        when e.availability_status in ('maintenance', 'retired') then e.availability_status
-        when p_condition = 'damaged' then 'maintenance'
+        when e.availability_status = 'retired' then 'retired'
         when p_condition = 'lost' and greatest(0, e.quantity - bi.quantity) = 0 then 'retired'
+        when e.availability_status = 'maintenance' then 'maintenance'
+        when p_condition = 'damaged'
+          and greatest(0, e.quantity - (e.out_of_service_quantity + bi.quantity)) = 0
+          then 'maintenance'
         when coalesce((
           select sum(active_bi.quantity)
           from public.borrowing_items active_bi
@@ -888,7 +1025,16 @@ begin
             and active_b.transaction_status in ('approved', 'released')
         ), 0) >= greatest(
           0,
-          e.quantity - case when p_condition = 'lost' then bi.quantity else 0 end
+          e.quantity
+          - case when p_condition = 'lost' then bi.quantity else 0 end
+          - case
+              when p_condition = 'damaged' then e.out_of_service_quantity + bi.quantity
+              when p_condition = 'lost' then least(
+                e.out_of_service_quantity,
+                greatest(0, e.quantity - bi.quantity)
+              )
+              else e.out_of_service_quantity
+            end
         ) then 'borrowed'
         else 'available'
       end
@@ -957,23 +1103,185 @@ create trigger block_overdue_reservation_requests
 before insert on public.reservations
 for each row execute function public.prevent_overdue_borrower_requests();
 
+create or replace function public.review_equipment_reservation(
+  p_reservation_id bigint,
+  p_action text,
+  p_decline_reason text default null
+)
+returns void
+language plpgsql
+security definer
+set search_path = ''
+as $$
+declare
+  v_actor uuid := (select auth.uid());
+  v_reservation public.reservations%rowtype;
+begin
+  if v_actor is null or not public.is_equipment_manager_user() then
+    raise exception 'Only administrators and property custodians can review reservations.';
+  end if;
+  if p_action is null or p_action not in ('approve', 'reject') then
+    raise exception 'Choose approve or reject.';
+  end if;
+  if p_action = 'reject' and nullif(trim(p_decline_reason), '') is null then
+    raise exception 'A reason is required to decline a reservation.';
+  end if;
+
+  perform e.equipment_id
+  from public.equipment e
+  join public.reservations r on r.equipment_id = e.equipment_id
+  where r.reservation_id = p_reservation_id
+  order by e.equipment_id
+  for update of e;
+
+  select r.* into v_reservation
+  from public.reservations r
+  where r.reservation_id = p_reservation_id
+  for update;
+  if not found or v_reservation.status <> 'pending' then
+    raise exception 'This reservation is no longer pending.';
+  end if;
+
+  if p_action = 'approve' and not public.equipment_period_has_approval_capacity(
+    v_reservation.equipment_id,
+    v_reservation.start_date,
+    v_reservation.end_date,
+    v_reservation.quantity,
+    null,
+    v_reservation.reservation_id
+  ) then
+    raise exception 'The reserved amount is no longer available for the selected dates.';
+  end if;
+
+  update public.reservations
+  set status = case when p_action = 'approve' then 'approved' else 'rejected' end,
+      decline_reason = case when p_action = 'reject' then trim(p_decline_reason) else null end,
+      reviewed_by = v_actor,
+      reviewed_at = now()
+  where reservation_id = p_reservation_id;
+end;
+$$;
+revoke all on function public.review_equipment_reservation(bigint, text, text) from public, anon;
+grant execute on function public.review_equipment_reservation(bigint, text, text) to authenticated;
+
+create or replace function public.expire_unpicked_reservations()
+returns integer
+language plpgsql
+set search_path = ''
+as $$
+declare
+  v_equipment_id bigint;
+  v_reservation_id bigint;
+  v_expired integer := 0;
+  v_row_count integer;
+begin
+  for v_equipment_id in
+    select e.equipment_id
+    from public.equipment e
+    where exists (
+      select 1
+      from public.reservations r
+      cross join public.reservation_settings s
+      where r.equipment_id = e.equipment_id
+        and s.singleton
+        and r.status = 'approved'
+        and r.picked_up_at is null
+        and ((r.start_date + r.start_time) at time zone current_setting('TimeZone'))
+          + make_interval(mins => s.pickup_grace_period_minutes) < now()
+    )
+    order by e.equipment_id
+    for update of e
+  loop
+    null;
+  end loop;
+
+  for v_reservation_id in
+    select r.reservation_id
+    from public.reservations r
+    cross join public.reservation_settings s
+    where s.singleton
+      and r.status = 'approved'
+      and r.picked_up_at is null
+      and ((r.start_date + r.start_time) at time zone current_setting('TimeZone'))
+        + make_interval(mins => s.pickup_grace_period_minutes) < now()
+    order by r.reservation_id
+    for update of r
+  loop
+    update public.reservations r
+    set status = 'expired'
+    from public.reservation_settings s
+    where r.reservation_id = v_reservation_id
+      and s.singleton
+      and r.status = 'approved'
+      and r.picked_up_at is null
+      and ((r.start_date + r.start_time) at time zone current_setting('TimeZone'))
+        + make_interval(mins => s.pickup_grace_period_minutes) < now();
+    get diagnostics v_row_count = row_count;
+    v_expired := v_expired + v_row_count;
+  end loop;
+
+  return v_expired;
+end;
+$$;
+revoke all on function public.expire_unpicked_reservations() from public, anon, authenticated;
+
 create or replace function public.flag_overdue_borrowing_items()
 returns integer
 language plpgsql
 set search_path = ''
 as $$
 declare
-  v_flagged integer;
+  v_equipment_id bigint;
+  v_borrowing_id bigint;
+  v_flagged integer := 0;
+  v_row_count integer;
 begin
-  update public.borrowing_items bi
-  set is_overdue = true, overdue_at = now()
-  from public.borrowings b
-  where b.borrowing_id = bi.borrowing_id
-    and b.transaction_status = 'released'
-    and b.expected_return_date < now()
-    and bi.item_status = 'released'
-    and not bi.is_overdue;
-  get diagnostics v_flagged = row_count;
+  for v_equipment_id in
+    select e.equipment_id
+    from public.equipment e
+    where exists (
+      select 1
+      from public.borrowing_items bi
+      join public.borrowings b using (borrowing_id)
+      where bi.equipment_id = e.equipment_id
+        and b.transaction_status = 'released'
+        and b.expected_return_date < now()
+        and bi.item_status = 'released'
+        and not bi.is_overdue
+    )
+    order by e.equipment_id
+    for update of e
+  loop
+    null;
+  end loop;
+
+  for v_borrowing_id in
+    select b.borrowing_id
+    from public.borrowings b
+    where b.transaction_status = 'released'
+      and b.expected_return_date < now()
+      and exists (
+        select 1 from public.borrowing_items bi
+        where bi.borrowing_id = b.borrowing_id
+          and bi.item_status = 'released'
+          and not bi.is_overdue
+      )
+    order by b.borrowing_id
+    for update of b
+  loop
+    update public.borrowing_items bi
+    set is_overdue = true, overdue_at = now()
+    from public.borrowings b
+    where bi.borrowing_id = v_borrowing_id
+      and b.borrowing_id = bi.borrowing_id
+      and b.transaction_status = 'released'
+      and b.expected_return_date < now()
+      and bi.item_status = 'released'
+      and not bi.is_overdue;
+    get diagnostics v_row_count = row_count;
+    v_flagged := v_flagged + v_row_count;
+  end loop;
+
   return v_flagged;
 end;
 $$;

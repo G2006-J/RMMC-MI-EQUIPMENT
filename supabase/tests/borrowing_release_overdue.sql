@@ -10,14 +10,25 @@ declare
   v_borrower_email text;
   v_category_id bigint;
   v_equipment_id bigint;
+  v_damaged_equipment_id bigint;
+  v_legacy_equipment_id bigint;
   v_available_equipment_id bigint;
   v_borrowing_id bigint;
   v_borrowing_item_id bigint;
+  v_damaged_borrowing_id bigint;
+  v_damaged_item_id bigint;
+  v_legacy_borrowing_id bigint;
+  v_legacy_item_id bigint;
   v_cancel_borrowing_id bigint;
   v_decline_borrowing_id bigint;
   v_lost_item_id bigint;
   v_available_quantity integer;
   v_audit_count integer;
+  v_lock_function regprocedure;
+  v_lock_marker text;
+  v_function_definition text;
+  v_equipment_lock_position integer;
+  v_parent_lock_position integer;
 begin
   select p.id
   into v_manager
@@ -81,6 +92,30 @@ begin
   )
   returning equipment_id into v_available_equipment_id;
 
+  insert into public.equipment (
+    asset_code, equipment_name, category_id, quantity, availability_status
+  )
+  values (
+    'DAMAGED-QUANTITY-' || replace(gen_random_uuid()::text, '-', ''),
+    'Damaged quantity test equipment',
+    v_category_id,
+    10,
+    'available'
+  )
+  returning equipment_id into v_damaged_equipment_id;
+
+  insert into public.equipment (
+    asset_code, equipment_name, category_id, quantity, availability_status
+  )
+  values (
+    'LEGACY-RELEASE-' || replace(gen_random_uuid()::text, '-', ''),
+    'Legacy release test equipment',
+    v_category_id,
+    1,
+    'available'
+  )
+  returning equipment_id into v_legacy_equipment_id;
+
   insert into public.borrowings (
     transaction_code, borrower_id, processed_by, purpose, destination, expected_return_date
   )
@@ -128,6 +163,75 @@ begin
   values (v_borrowing_id, v_equipment_id, 1)
   returning borrowing_item_id into v_borrowing_item_id;
 
+  select available_quantity into v_available_quantity
+  from public.equipment_available_quantities()
+  where equipment_id = v_equipment_id;
+  if v_available_quantity <> 1
+    or not public.equipment_period_has_capacity(
+      v_equipment_id,
+      current_date,
+      current_date + 1,
+      1,
+      null,
+      null
+    ) then
+    raise exception 'Requested borrowings must not reduce availability or capacity.';
+  end if;
+
+  v_damaged_borrowing_id := public.request_equipment_borrowing(
+    v_damaged_equipment_id,
+    'Damaged unit quantity test',
+    'Test room',
+    now() + interval '1 day',
+    1
+  );
+  select borrowing_item_id into v_damaged_item_id
+  from public.borrowing_items
+  where borrowing_id = v_damaged_borrowing_id;
+
+  v_legacy_borrowing_id := public.request_equipment_borrowing(
+    v_legacy_equipment_id,
+    'Legacy already-issued test',
+    'Test room',
+    now() + interval '1 day',
+    1
+  );
+  select borrowing_item_id into v_legacy_item_id
+  from public.borrowing_items
+  where borrowing_id = v_legacy_borrowing_id;
+  update public.borrowings
+  set transaction_status = 'approved'
+  where borrowing_id = v_legacy_borrowing_id;
+  update public.borrowing_items
+  set item_status = 'approved', issued_at = now() - interval '1 hour'
+  where borrowing_item_id = v_legacy_item_id;
+
+  for v_lock_function, v_lock_marker in
+    select required.function_oid, required.parent_lock
+    from (values
+      ('public.review_borrowing_request(bigint,text,text)'::regprocedure, 'for update;'),
+      ('public.review_equipment_reservation(bigint,text,text)'::regprocedure, 'for update;'),
+      ('public.cancel_my_pending_borrowing(bigint)'::regprocedure, 'for update;'),
+      ('public.request_equipment_return(bigint)'::regprocedure, 'for update;'),
+      ('public.release_equipment_borrowing(bigint,text,text,text)'::regprocedure, 'for update;'),
+      ('public.complete_equipment_return(bigint,text,text,text)'::regprocedure, 'for update;'),
+      ('public.mark_legacy_issued_borrowings_released()'::regprocedure, 'for update'),
+      ('public.expire_unpicked_reservations()'::regprocedure, 'for update of r'),
+      ('public.flag_overdue_borrowing_items()'::regprocedure, 'for update of b')
+    ) as required(function_oid, parent_lock)
+  loop
+    v_function_definition := lower(pg_get_functiondef(v_lock_function));
+    v_equipment_lock_position := position('for update of e' in v_function_definition);
+    v_parent_lock_position := position(
+      v_lock_marker
+      in substring(v_function_definition from v_equipment_lock_position + 1)
+    );
+    if v_equipment_lock_position = 0 or v_parent_lock_position = 0 then
+      raise exception 'Equipment-first row lock order is missing in function %.',
+        v_lock_function;
+    end if;
+  end loop;
+
   perform public.cancel_my_pending_borrowing(v_cancel_borrowing_id);
   if (select transaction_status from public.borrowings where borrowing_id = v_cancel_borrowing_id) <> 'cancelled'
     or (select item_status from public.borrowing_items where borrowing_id = v_cancel_borrowing_id) <> 'cancelled' then
@@ -149,6 +253,22 @@ begin
     jsonb_build_object('sub', v_manager)::text,
     true
   );
+
+  if public.mark_legacy_issued_borrowings_released() <> 1
+    or (select transaction_status from public.borrowings where borrowing_id = v_legacy_borrowing_id) <> 'released'
+    or not exists (
+      select 1 from public.borrowing_items
+      where borrowing_item_id = v_legacy_item_id
+        and item_status = 'released'
+        and released_by = v_manager
+        and released_at = (select issued_at from public.borrowing_items where borrowing_item_id = v_legacy_item_id)
+    )
+    or (select availability_status from public.equipment where equipment_id = v_legacy_equipment_id) <> 'borrowed' then
+    raise exception 'Staff must be able to reconcile legacy issued approved borrowings as released.';
+  end if;
+  if public.mark_legacy_issued_borrowings_released() <> 0 then
+    raise exception 'The legacy issued borrowing reconciliation must be one-time and idempotent.';
+  end if;
 
   begin
     perform public.review_borrowing_request(v_decline_borrowing_id, 'reject', null);
@@ -185,6 +305,12 @@ begin
   if (select transaction_status from public.borrowings where borrowing_id = v_borrowing_id) <> 'approved'
     or (select item_status from public.borrowing_items where borrowing_item_id = v_borrowing_item_id) <> 'approved' then
     raise exception 'Approval must leave the borrowing and item in the approved state, not released.';
+  end if;
+  select available_quantity into v_available_quantity
+  from public.equipment_available_quantities()
+  where equipment_id = v_equipment_id;
+  if v_available_quantity <> 0 then
+    raise exception 'Approved borrowings must reduce available quantity.';
   end if;
 
   begin
@@ -413,6 +539,40 @@ begin
   where borrowing_id = v_borrowing_id;
   if v_audit_count < 6 then
     raise exception 'Approval, release, overdue, and return status changes must be audited.';
+  end if;
+
+  perform public.review_borrowing_request(v_damaged_borrowing_id, 'approve', null);
+  perform public.release_equipment_borrowing(v_damaged_borrowing_id, 'good', null, null);
+  perform public.complete_equipment_return(
+    v_damaged_borrowing_id,
+    'damaged',
+    null,
+    'One of ten units returned damaged'
+  );
+  select available_quantity into v_available_quantity
+  from public.equipment_available_quantities()
+  where equipment_id = v_damaged_equipment_id;
+  if v_available_quantity <> 9
+    or (select out_of_service_quantity from public.equipment where equipment_id = v_damaged_equipment_id) <> 1
+    or (select availability_status from public.equipment where equipment_id = v_damaged_equipment_id) <> 'available' then
+    raise exception 'One damaged unit in quantity ten must leave nine usable units available.';
+  end if;
+  if not public.equipment_period_has_capacity(
+    v_damaged_equipment_id,
+    current_date,
+    current_date + 1,
+    9,
+    null,
+    null
+  ) or public.equipment_period_has_capacity(
+    v_damaged_equipment_id,
+    current_date,
+    current_date + 1,
+    10,
+    null,
+    null
+  ) then
+    raise exception 'Damaged units must be excluded from future borrowing capacity.';
   end if;
 
   perform set_config('request.jwt.claim.sub', v_borrower_user::text, true);
