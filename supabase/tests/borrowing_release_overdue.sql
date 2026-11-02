@@ -19,11 +19,16 @@ declare
   v_damaged_item_id bigint;
   v_legacy_borrowing_id bigint;
   v_legacy_item_id bigint;
+  v_audit_borrowing_id bigint;
+  v_audit_item_id bigint;
+  v_audit_damage_report_id bigint;
+  v_test_reservation_id bigint;
   v_cancel_borrowing_id bigint;
   v_decline_borrowing_id bigint;
   v_lost_item_id bigint;
   v_available_quantity integer;
   v_audit_count integer;
+  v_audit_start_id bigint;
   v_lock_function regprocedure;
   v_lock_marker text;
   v_function_definition text;
@@ -59,6 +64,39 @@ begin
 
   if v_manager is null or v_borrower_id is null or v_category_id is null then
     raise exception 'Test requires an active manager, linked borrower, and equipment category.';
+  end if;
+  if not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'profiles'
+      and column_name = 'account_status' and position('pending' in column_default) > 0
+  ) or not exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'borrowers'
+      and column_name = 'status' and position('pending' in column_default) > 0
+  ) then
+    raise exception 'New profiles and borrower records must default to pending.';
+  end if;
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'borrowing_items'
+      and column_name in ('condition_on_release', 'condition_on_return')
+  ) then
+    raise exception 'Legacy condition_on_release and condition_on_return columns must be removed after migration.';
+  end if;
+  if not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.borrowing_items'::regclass
+      and conname = 'borrowing_items_quantity_positive' and convalidated
+  ) or not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.reservations'::regclass
+      and conname = 'reservations_quantity_positive' and convalidated
+  ) or not exists (
+    select 1 from pg_constraint
+    where conrelid = 'public.reservations'::regclass
+      and conname = 'reservations_end_date_gte_start_date' and convalidated
+  ) then
+    raise exception 'Positive quantity and reservation date constraints must be present and validated.';
   end if;
 
   perform set_config('request.jwt.claim.sub', v_borrower_user::text, true);
@@ -163,6 +201,53 @@ begin
   values (v_borrowing_id, v_equipment_id, 1)
   returning borrowing_item_id into v_borrowing_item_id;
 
+  begin
+    insert into public.borrowing_items (borrowing_id, equipment_id, quantity)
+    values (v_borrowing_id, v_available_equipment_id, 0);
+    raise exception 'Expected borrowing item quantity zero to fail.';
+  exception when check_violation then
+    null;
+  end;
+  begin
+    insert into public.reservations (
+      requested_by, borrower_id, equipment_id, purpose, destination,
+      start_date, end_date, start_time, end_time, quantity
+    )
+    values (
+      v_borrower_user, v_borrower_id, v_equipment_id,
+      'Invalid quantity test', 'Test room',
+      current_date, current_date, time '09:00', time '17:00', 0
+    );
+    raise exception 'Expected reservation quantity zero to fail.';
+  exception when check_violation then
+    null;
+  end;
+  begin
+    insert into public.reservations (
+      requested_by, borrower_id, equipment_id, purpose, destination,
+      start_date, end_date, start_time, end_time, quantity
+    )
+    values (
+      v_borrower_user, v_borrower_id, v_equipment_id,
+      'Invalid date test', 'Test room',
+      current_date + 1, current_date, time '09:00', time '17:00', 1
+    );
+    raise exception 'Expected reservation end date before start date to fail.';
+  exception when check_violation then
+    null;
+  end;
+
+  insert into public.reservations (
+    requested_by, borrower_id, equipment_id, purpose, destination,
+    start_date, end_date, start_time, end_time, quantity, status
+  )
+  values (
+    v_borrower_user, v_borrower_id, v_equipment_id,
+    'Reservation capacity test', 'Test room',
+    current_date, current_date + 1, time '09:00', time '17:00', 1, 'pending'
+  )
+  returning reservation_id into v_test_reservation_id;
+
   select available_quantity into v_available_quantity
   from public.equipment_available_quantities()
   where equipment_id = v_equipment_id;
@@ -177,6 +262,41 @@ begin
     ) then
     raise exception 'Requested borrowings must not reduce availability or capacity.';
   end if;
+  update public.reservations
+  set status = 'approved'
+  where reservation_id = v_test_reservation_id;
+  if public.equipment_period_has_capacity(
+    v_equipment_id,
+    current_date,
+    current_date + 1,
+    1,
+    null,
+    null
+  ) then
+    raise exception 'An approved reservation must reduce available capacity.';
+  end if;
+  select available_quantity into v_available_quantity
+  from public.equipment_available_quantities()
+  where equipment_id = v_equipment_id;
+  if v_available_quantity <> 0 then
+    raise exception 'An approved reservation must reduce available quantity.';
+  end if;
+  update public.reservations
+  set status = 'cancelled'
+  where reservation_id = v_test_reservation_id;
+
+  insert into public.borrowings (
+    transaction_code, borrower_id, processed_by, purpose, destination, expected_return_date
+  )
+  values (
+    'AUDIT-' || replace(gen_random_uuid()::text, '-', ''),
+    v_borrower_id, v_borrower_user, 'Audit trigger test', 'Test room',
+    now() + interval '1 day'
+  )
+  returning borrowing_id into v_audit_borrowing_id;
+  insert into public.borrowing_items (borrowing_id, equipment_id, quantity)
+  values (v_audit_borrowing_id, v_equipment_id, 1)
+  returning borrowing_item_id into v_audit_item_id;
 
   v_damaged_borrowing_id := public.request_equipment_borrowing(
     v_damaged_equipment_id,
@@ -215,7 +335,7 @@ begin
       ('public.request_equipment_return(bigint)'::regprocedure, 'for update;'),
       ('public.release_equipment_borrowing(bigint,text,text,text)'::regprocedure, 'for update;'),
       ('public.complete_equipment_return(bigint,text,text,text)'::regprocedure, 'for update;'),
-      ('public.mark_legacy_issued_borrowings_released()'::regprocedure, 'for update'),
+      ('public.mark_legacy_issued_borrowings_released(bigint[])'::regprocedure, 'for update'),
       ('public.expire_unpicked_reservations()'::regprocedure, 'for update of r'),
       ('public.flag_overdue_borrowing_items()'::regprocedure, 'for update of b')
     ) as required(function_oid, parent_lock)
@@ -254,7 +374,77 @@ begin
     true
   );
 
-  if public.mark_legacy_issued_borrowings_released() <> 1
+  select coalesce(max(audit_id), 0) into v_audit_start_id
+  from public.borrowing_workflow_audit;
+  update public.borrowings
+  set transaction_status = 'cancelled'
+  where borrowing_id = v_audit_borrowing_id;
+  select count(*) into v_audit_count
+  from public.borrowing_workflow_audit
+  where audit_id > v_audit_start_id;
+  if v_audit_count <> 1 or not exists (
+    select 1 from public.borrowing_workflow_audit
+    where audit_id > v_audit_start_id
+      and borrowing_id = v_audit_borrowing_id
+      and borrowing_item_id is null
+      and damage_report_id is null
+      and entity_type = 'borrowing'
+  ) then
+    raise exception 'A borrowing status update must write exactly one correctly identified borrowing audit row.';
+  end if;
+
+  select coalesce(max(audit_id), 0) into v_audit_start_id
+  from public.borrowing_workflow_audit;
+  update public.borrowing_items
+  set item_status = 'cancelled'
+  where borrowing_item_id = v_audit_item_id;
+  select count(*) into v_audit_count
+  from public.borrowing_workflow_audit
+  where audit_id > v_audit_start_id;
+  if v_audit_count <> 1 or not exists (
+    select 1 from public.borrowing_workflow_audit
+    where audit_id > v_audit_start_id
+      and borrowing_id = v_audit_borrowing_id
+      and borrowing_item_id = v_audit_item_id
+      and damage_report_id is null
+      and entity_type = 'item'
+  ) then
+    raise exception 'A borrowing item status update must write exactly one correctly identified item audit row.';
+  end if;
+
+  insert into public.damage_loss_reports (
+    borrowing_item_id, reporter_id, report_type, description
+  )
+  values (
+    v_audit_item_id, v_manager, 'damage', 'Audit trigger damage test'
+  )
+  returning report_id into v_audit_damage_report_id;
+  select coalesce(max(audit_id), 0) into v_audit_start_id
+  from public.borrowing_workflow_audit;
+  update public.damage_loss_reports
+  set resolution_status = 'under_review'
+  where report_id = v_audit_damage_report_id;
+  select count(*) into v_audit_count
+  from public.borrowing_workflow_audit
+  where audit_id > v_audit_start_id;
+  if v_audit_count <> 1 or not exists (
+    select 1 from public.borrowing_workflow_audit
+    where audit_id > v_audit_start_id
+      and borrowing_id = v_audit_borrowing_id
+      and borrowing_item_id = v_audit_item_id
+      and damage_report_id = v_audit_damage_report_id
+      and entity_type = 'damage_report'
+  ) then
+    raise exception 'A damage report status update must write exactly one correctly identified damage report audit row.';
+  end if;
+
+  if not exists (
+    select 1 from public.preview_legacy_issued_borrowings()
+    where borrowing_id = v_legacy_borrowing_id
+  ) then
+    raise exception 'The legacy release preview must list only eligible rows, including the selected test row.';
+  end if;
+  if public.mark_legacy_issued_borrowings_released(array[v_legacy_borrowing_id]) <> 1
     or (select transaction_status from public.borrowings where borrowing_id = v_legacy_borrowing_id) <> 'released'
     or not exists (
       select 1 from public.borrowing_items
@@ -266,8 +456,13 @@ begin
     or (select availability_status from public.equipment where equipment_id = v_legacy_equipment_id) <> 'borrowed' then
     raise exception 'Staff must be able to reconcile legacy issued approved borrowings as released.';
   end if;
-  if public.mark_legacy_issued_borrowings_released() <> 0 then
-    raise exception 'The legacy issued borrowing reconciliation must be one-time and idempotent.';
+  begin
+    perform public.mark_legacy_issued_borrowings_released(array[v_legacy_borrowing_id]);
+    raise exception 'The legacy issued borrowing reconciliation must reject already-released selections.';
+  exception when others then
+    if sqlerrm not like '%Every selected borrowing must still be approved%' then
+      raise;
+    end if;
   end if;
 
   begin

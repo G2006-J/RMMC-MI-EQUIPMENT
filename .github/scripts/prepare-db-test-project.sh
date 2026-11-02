@@ -37,6 +37,7 @@ migrations=(
   202611030001_borrower_account_approval_and_user_link.sql
   202611030002_request_integrity_and_reservation_expiry.sql
   202611030003_borrowing_release_overdue_and_audit.sql
+  202611030004_audit_and_integrity_fixes.sql
 )
 
 index=1
