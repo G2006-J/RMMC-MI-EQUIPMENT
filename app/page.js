@@ -30,6 +30,7 @@ import {
   UsersRound,
   X,
 } from "lucide-react";
+import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient as createAuthClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
@@ -56,16 +57,18 @@ const CUSTODIAN_NAV_ITEMS = [
   { id: "equipment", label: "Equipment", icon: Package },
   { id: "currently-borrowed", label: "Equipment tracking", icon: ArrowLeftRight },
   { id: "requests", label: "Requests", icon: ClipboardList },
+  { id: "pending-accounts", label: "Pending accounts", icon: ShieldCheck },
   { id: "feedback", label: "Feedback", icon: MessageSquare },
   { id: "account", label: "Account settings", icon: Settings },
 ];
 
 const ADMIN_ITEMS = [
   { id: "requests", label: "Manage requests", icon: ClipboardList },
+  { id: "pending-accounts", label: "Pending accounts", icon: ShieldCheck },
   { id: "members", label: "Members & roles", icon: UsersRound },
 ];
 
-const ACTIVE_BORROWING = ["pending", "approved", "checked_out", "return_requested"];
+const ACTIVE_BORROWING = ["requested", "approved", "released", "overdue", "return_requested"];
 
 const dateLabel = (value) =>
   value
@@ -113,6 +116,20 @@ async function encodeImageToWebp(file, label, maxDimension) {
   return encodedImage;
 }
 
+async function uploadItemConditionPhoto(supabase, userId, file, label) {
+  const encodedImage = await encodeImageToWebp(file, label, 2048);
+  if (!encodedImage) return null;
+  const path = `${userId}/${crypto.randomUUID()}.webp`;
+  const { error } = await supabase.storage
+    .from("item-condition-photos")
+    .upload(path, new File([encodedImage], "condition.webp", { type: "image/webp" }), {
+      contentType: "image/webp",
+      cacheControl: "3600",
+    });
+  if (error) throw error;
+  return path;
+}
+
 function ProfileAvatar({ name, photoUrl, className = "avatar" }) {
   return (
     <span className={className}>
@@ -140,8 +157,10 @@ function StatusPill({ value }) {
     maintenance: "Maintenance",
     retired: "Retired",
     pending: "Pending review",
+    requested: "Requested",
     approved: "Approved",
     borrowed: "Borrowed",
+    released: "Released",
     checked_out: "On loan",
     return_requested: "Return requested",
     returned: "Returned",
@@ -150,6 +169,7 @@ function StatusPill({ value }) {
     rejected: "Declined",
     cancelled: "Cancelled",
     fulfilled: "Fulfilled",
+    expired: "Expired",
   };
   return <span className={`pill pill-${value}`}>{labels[value] || value?.replaceAll("_", " ")}</span>;
 }
@@ -159,7 +179,6 @@ function SignIn({ supabase, configError }) {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
-  const [passwordVerified, setPasswordVerified] = useState(false);
   const [isCodeSent, setIsCodeSent] = useState(false);
   const [otpCooldown, setOtpCooldown] = useState(0);
   const [name, setName] = useState("");
@@ -239,7 +258,6 @@ function SignIn({ supabase, configError }) {
           if (passwordError) throw passwordError;
           const { error: signOutError } = await validationClient.auth.signOut({ scope: "local" });
           if (signOutError) throw signOutError;
-          setPasswordVerified(true);
           const { error: otpError } = await supabase.auth.signInWithOtp({
             email: email.trim().toLowerCase(),
             options: { shouldCreateUser: false },
@@ -283,11 +301,13 @@ function SignIn({ supabase, configError }) {
       }
     } catch (submissionError) {
       const message = getErrorMessage(submissionError);
-      setError(mode === "signin"
-        ? `${isCodeSent ? "Invalid or expired code" : passwordVerified ? "Error sending code" : "Sign-in failed"}: ${message}`
-        : mode === "signup" && isCodeSent
-          ? `Invalid or expired code: ${message}`
-          : message);
+      if (mode === "signin") {
+        setError("Unable to sign in with those details. Check your credentials or verification code and try again.");
+      } else if (mode === "reset") {
+        setError("If an account exists for that address, a password reset email may be sent. Please try again later.");
+      } else {
+        setError(mode === "signup" && isCodeSent ? `Invalid or expired code: ${message}` : message);
+      }
     } finally {
       setBusy(false);
     }
@@ -313,7 +333,6 @@ function SignIn({ supabase, configError }) {
     setIsCodeSent(false);
     setOtpCooldown(0);
     setToken("");
-    setPasswordVerified(false);
     setError("");
     setNotice("");
   }
@@ -321,10 +340,10 @@ function SignIn({ supabase, configError }) {
   return (
     <main className="auth-page">
       <section className="auth-showcase">
-        <a className="auth-brand" href="/" aria-label="RMMC-MI equipment home">
+        <Link className="auth-brand" href="/" aria-label="RMMC-MI equipment home">
           <span className="brand-mark"><HardDrive size={21} /></span>
           <span>RMMC <b>·</b> MI</span>
-        </a>
+        </Link>
         <div className="showcase-copy">
           <p className="eyebrow">Equipment, accounted for</p>
           <h1>Better care for the tools that move us forward.</h1>
@@ -347,7 +366,7 @@ function SignIn({ supabase, configError }) {
           <div className="auth-heading">
             <p className="eyebrow">{mode === "signup" ? isCodeSent ? "Verify your email" : "Get started" : mode === "reset" ? "Account recovery" : isCodeSent ? "Check your inbox" : "Welcome back"}</p>
             <h2>{mode === "signup" ? isCodeSent ? "Enter your verification code" : "Create your account" : mode === "reset" ? "Reset your password" : isCodeSent ? "Enter your sign-in code" : "Sign in to your workspace"}</h2>
-            <p>{mode === "signup" ? isCodeSent ? `Enter the verification code sent to ${email}.` : "Use your institutional email to request access." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the verification code sent to ${email} after your password was confirmed.` : "Enter your institutional email and password. We’ll send a verification code after your credentials are confirmed."}</p>
+            <p>{mode === "signup" ? isCodeSent ? `Enter the verification code sent to ${email}.` : "Use your institutional email to request access. After verifying your email, staff must approve your account before you can borrow equipment." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the verification code sent to ${email} after your password was confirmed.` : "Enter your institutional email and password. We’ll send a verification code after your credentials are confirmed."}</p>
           </div>
           <form className="auth-form" onSubmit={submit}>
             {mode === "signup" && !isCodeSent && (
@@ -425,7 +444,7 @@ function SignIn({ supabase, configError }) {
           </form>
           <p className="auth-switch">
             {mode === "signin" && isCodeSent
-              ? <button type="button" onClick={() => { setIsCodeSent(false); setPasswordVerified(false); setToken(""); setError(""); setNotice(""); }}>Use a different email</button>
+              ? <button type="button" onClick={() => { setIsCodeSent(false); setToken(""); setError(""); setNotice(""); }}>Use a different email</button>
               : mode === "reset"
                 ? <button type="button" onClick={() => changeMode("signin")}>Back to sign in</button>
                 : <>
@@ -493,6 +512,7 @@ export default function Home() {
   const [currentlyBorrowed, setCurrentlyBorrowed] = useState([]);
   const [reservations, setReservations] = useState([]);
   const [members, setMembers] = useState([]);
+  const [pendingAccounts, setPendingAccounts] = useState([]);
   const [equipmentAudit, setEquipmentAudit] = useState([]);
   const [feedbackThreads, setFeedbackThreads] = useState([]);
   const [borrowerId, setBorrowerId] = useState(null);
@@ -533,6 +553,7 @@ export default function Home() {
       setCurrentlyBorrowed([]);
       setReservations([]);
       setMembers([]);
+      setPendingAccounts([]);
       setEquipmentAudit([]);
       setFeedbackThreads([]);
       setBorrowerId(null);
@@ -553,17 +574,32 @@ export default function Home() {
     const isEquipmentManager = isAdminUser || isCustodianUser;
     setProfile(currentProfile);
 
+    if (currentProfile.account_status !== "active") {
+      setEquipment([]);
+      setCategoryOptions([]);
+      setBorrowings([]);
+      setCurrentlyBorrowed([]);
+      setReservations([]);
+      setMembers([]);
+      setPendingAccounts([]);
+      setEquipmentAudit([]);
+      setFeedbackThreads([]);
+      setBorrowerId(null);
+      setLoading(false);
+      return;
+    }
+
     const borrowingQuery = client.from("borrowings")
       .select("*, borrowers(borrower_id, first_name, middle_name, last_name, email, department), borrowing_items(*, equipment(equipment_id, asset_code, equipment_name, category_id, storage_location, availability_status, categories(category_name)))")
       .order("created_at", { ascending: false });
     const scopedBorrowingQuery = isCustodianUser
-      ? borrowingQuery.in("transaction_status", ["pending", "approved", "borrowed"])
+      ? borrowingQuery.in("transaction_status", ["requested", "approved", "released"])
       : borrowingQuery;
     const reservationQuery = client.from("reservations")
       .select("*, equipment(equipment_id, asset_code, equipment_name, categories(category_name)), borrowers(borrower_id, first_name, middle_name, last_name, email)")
       .order("created_at", { ascending: false });
     const scopedReservationQuery = isCustodianUser
-      ? reservationQuery.eq("status", "pending")
+      ? reservationQuery.in("status", ["pending", "approved"])
       : reservationQuery;
 
     const [equipmentResult, categoryResult, borrowingResult, availableQuantitiesResult, borrowerResult, reservationResult, feedbackResult, repliesResult, currentlyBorrowedResult] = await Promise.all([
@@ -642,7 +678,7 @@ export default function Home() {
       errors.push(`Your borrower record could not be found: ${borrowerResult.error.message}`);
     } else if (!isCustodianUser) {
       setBorrowerId(borrowerResult.data || null);
-      if (!borrowerResult.data) errors.push(`No active borrower record matches ${currentUser.email || "your signed-in email"}. An administrator must add your account to the borrowers table before you can submit or view borrowing requests.`);
+      if (!borrowerResult.data) errors.push("No active borrower record is linked to your account. An administrator or property custodian must approve your borrower access before you can submit or view borrowing requests.");
     } else {
       setBorrowerId(null);
     }
@@ -658,10 +694,11 @@ export default function Home() {
         const equipmentItem = firstItem?.equipment;
         const equipmentNames = (item.borrowing_items || []).map((borrowingItem) => borrowingItem.equipment?.equipment_name).filter(Boolean);
         const assetCodes = (item.borrowing_items || []).map((borrowingItem) => borrowingItem.equipment?.asset_code).filter(Boolean);
-        const status = openReturnIds.has(item.borrowing_id)
+        const isOverdue = (item.borrowing_items || []).some((borrowingItem) => borrowingItem.is_overdue);
+        const status = item.transaction_status === "released" && openReturnIds.has(item.borrowing_id)
           ? "return_requested"
-          : item.transaction_status === "borrowed"
-            ? "checked_out"
+          : isOverdue
+            ? "overdue"
             : item.transaction_status;
         return {
           ...item,
@@ -673,6 +710,7 @@ export default function Home() {
           start_date: item.request_date,
           expected_return: item.expected_return_date,
           status,
+          is_overdue: isOverdue,
           equipment_id: equipmentItem?.equipment_id,
           equipment: equipmentItem ? {
             id: equipmentItem.equipment_id,
@@ -729,6 +767,19 @@ export default function Home() {
       setMembers([]);
     }
     if (isEquipmentManager) {
+      const pendingAccountsResult = await client.from("profiles")
+        .select("id, full_name, email, created_at")
+        .eq("account_status", "pending")
+        .order("created_at", { ascending: true });
+      if (pendingAccountsResult.error) {
+        errors.push(`Pending accounts could not be loaded: ${pendingAccountsResult.error.message}`);
+      } else {
+        setPendingAccounts(pendingAccountsResult.data || []);
+      }
+    } else {
+      setPendingAccounts([]);
+    }
+    if (isEquipmentManager) {
       const auditResult = await client.from("equipment_audit_log").select("*").order("changed_at", { ascending: false }).limit(30);
       if (auditResult.error) errors.push(`Equipment change history could not be loaded: ${auditResult.error.message}`);
       else setEquipmentAudit((auditResult.data || []).map((entry) => ({
@@ -765,6 +816,7 @@ export default function Home() {
         setCurrentlyBorrowed([]);
         setReservations([]);
         setMembers([]);
+        setPendingAccounts([]);
         setEquipmentAudit([]);
         setFeedbackThreads([]);
         setLoading(false);
@@ -784,9 +836,9 @@ export default function Home() {
   useEffect(() => {
     if (!profile) return;
     const allowedViews = isAdmin
-      ? ["overview", "equipment", "currently-borrowed", "reports", "feedback", "requests", "members", "account"]
+      ? ["overview", "equipment", "currently-borrowed", "reports", "feedback", "requests", "pending-accounts", "members", "account"]
       : isPropertyCustodian
-        ? ["overview", "equipment", "currently-borrowed", "requests", "feedback", "account"]
+        ? ["overview", "equipment", "currently-borrowed", "requests", "pending-accounts", "feedback", "account"]
         : ["equipment", "loans", "feedback", "account"];
     if (!allowedViews.includes(view)) setView(isAdmin || isPropertyCustodian ? "overview" : "equipment");
   }, [profile, isAdmin, isPropertyCustodian, view]);
@@ -818,12 +870,12 @@ export default function Home() {
 
   const counts = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
-    const currentLoans = borrowings.filter((item) => ["approved", "checked_out", "return_requested"].includes(item.status));
+    const currentLoans = borrowings.filter((item) => ["approved", "released", "overdue", "return_requested"].includes(item.status));
     return {
       available: equipment.filter((item) => item.status === "available").length,
       borrowed: currentLoans.length,
       dueSoon: currentLoans.filter((item) => item.expected_return && String(item.expected_return).slice(0, 10) <= today).length,
-      pending: borrowings.filter((item) => item.status === "pending").length + reservations.filter((item) => item.status === "pending").length,
+      pending: borrowings.filter((item) => item.status === "requested").length + reservations.filter((item) => item.status === "pending").length,
     };
   }, [equipment, borrowings, reservations]);
 
@@ -1047,13 +1099,13 @@ export default function Home() {
       rows = [
         ["Equipment", "Asset tag", "Category", "Status", "Storage location", "Current borrower", "Current location of use", "Expected return"],
         ...equipment.map((item) => {
-          const activeLoan = borrowings.find((loan) => loan.equipment_id === item.id && ["approved", "checked_out", "return_requested"].includes(loan.status));
+          const activeLoan = borrowings.find((loan) => loan.equipment_id === item.id && ["approved", "released", "overdue", "return_requested"].includes(loan.status));
           return [item.name, item.asset_tag, item.category, item.status, item.location, activeLoan?.borrower_email || "", activeLoan?.location_of_use || "", activeLoan?.expected_return || ""];
         }),
       ];
     } else {
       const reportRows = reportType === "overdue"
-        ? borrowings.filter((item) => ACTIVE_BORROWING.includes(item.status) && String(item.expected_return || "").slice(0, 10) < today)
+        ? borrowings.filter((item) => item.is_overdue || item.status === "overdue")
         : reportType === "returns"
           ? borrowings.filter((item) => item.status === "returned")
           : borrowings;
@@ -1123,6 +1175,21 @@ export default function Home() {
       </main>
     );
   }
+  if (profile.account_status !== "active") {
+    const isPending = profile.account_status === "pending";
+    return (
+      <main className="profile-guard" role="status">
+        <div>
+          <span className="brand-mark"><ShieldCheck size={21} /></span>
+          <h1>{isPending ? "Account pending approval" : "Workspace access unavailable"}</h1>
+          <p>{isPending
+            ? "Your account is awaiting approval from an administrator or property custodian. You cannot submit borrowing or reservation requests until it is approved."
+            : "This account is not active. Contact an administrator or property custodian if you believe this is a mistake."}</p>
+          <button className="button-secondary" type="button" onClick={signOut}>Sign out</button>
+        </div>
+      </main>
+    );
+  }
 
   const displayName = profile?.display_name || user.user_metadata?.display_name || user.email?.split("@")[0] || "Member";
   const userRole = profile?.role || "unavailable";
@@ -1134,6 +1201,7 @@ export default function Home() {
     reports: ["At a glance", "Reports", "Recent database-recorded equipment changes."],
     "currently-borrowed": ["Equipment use", "Equipment tracking", "Current borrowed and reserved equipment, including overdue loans."],
     requests: ["Operations", isPropertyCustodian ? "Borrower requests" : "Manage requests", "Find requests by the borrower's first or last name."],
+    "pending-accounts": ["Operations", "Pending accounts", "Approve or reject new borrower access requests."],
     members: ["Operations", "Members & roles", "Review account access and keep member permissions up to date."],
     feedback: ["Have a say", "Feedback & ideas", "Share improvements and discuss how the system should grow."],
     account: ["Your profile", "Account settings", "Keep your name and department information up to date."],
@@ -1151,17 +1219,18 @@ export default function Home() {
     <div className="app-shell">
       {mobileNav && <button className="backdrop" aria-label="Close navigation" onClick={() => setMobileNav(false)} />}
       <aside className={`sidebar ${mobileNav ? "sidebar-open" : ""}`}>
-        <a className="brand" href="/" aria-label="RMMC-MI home">
+        <Link className="brand" href="/" aria-label="RMMC-MI home">
           <span className="brand-mark"><HardDrive size={21} /></span>
           <span>RMMC <i>·</i> MI</span>
-        </a>
+        </Link>
         <div className="workspace-label">EQUIPMENT SERVICES</div>
         <nav className="main-nav" aria-label="Main navigation">
           <p className="nav-label">Workspace</p>
           {visibleNavItems.map(({ id, label, icon: Icon }) => (
             <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileNav(false); }}>
               <Icon size={18} /><span>{label}</span>
-              {id === "loans" && myBorrowings.some((item) => item.status === "pending") && <i className="nav-badge">!</i>}
+              {id === "loans" && myBorrowings.some((item) => item.status === "requested") && <i className="nav-badge">!</i>}
+              {id === "pending-accounts" && pendingAccounts.length > 0 && <i className="nav-badge">{pendingAccounts.length}</i>}
             </button>
           ))}
           {isAdmin && (
@@ -1171,6 +1240,7 @@ export default function Home() {
                 <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileNav(false); }}>
                   <Icon size={18} /><span>{label}</span>
                   {id === "requests" && counts.pending > 0 && <i className="nav-badge">{counts.pending}</i>}
+                  {id === "pending-accounts" && pendingAccounts.length > 0 && <i className="nav-badge">{pendingAccounts.length}</i>}
                 </button>
               ))}
             </>
@@ -1306,9 +1376,18 @@ export default function Home() {
                 <div className="list-toolbar-copy"><span className="toolbar-icon"><ClipboardList size={17} /></span><div><strong>My equipment</strong><small>Borrowing requests and reservations tied to your account</small></div></div>
                 <span className="record-count">{myBorrowings.length + myReservations.length} records</span>
               </div>
-              <BorrowingList rows={myBorrowings} onRequestReturn={(row) => runAction(() => supabase.rpc("request_equipment_return", { p_borrowing_id: row.id }), "Return request submitted.")} loading={loading} />
+              <BorrowingList
+                rows={myBorrowings}
+                onRequestReturn={(row) => runAction(() => supabase.rpc("request_equipment_return", { p_borrowing_id: row.id }), "Return request submitted.")}
+                onCancelRequest={(row) => runAction(() => supabase.rpc("cancel_my_pending_borrowing", { p_borrowing_id: row.id }), "Borrowing request cancelled.")}
+                loading={loading}
+              />
               <div className="section-title"><div><h2>My reservations</h2><p>Upcoming and past reservation requests</p></div><span className="record-count">{myReservations.length} records</span></div>
-              <ReservationList rows={myReservations} loading={loading} />
+              <ReservationList
+                rows={myReservations}
+                loading={loading}
+                onCancel={(row) => runAction(() => supabase.rpc("cancel_my_pending_reservation", { p_reservation_id: row.id }), "Reservation cancelled.")}
+              />
             </>
           )}
 
@@ -1320,6 +1399,16 @@ export default function Home() {
               runAction={runAction}
               supabase={supabase}
               canReview={isAdmin || isPropertyCustodian}
+              userId={user.id}
+            />
+          )}
+
+          {view === "pending-accounts" && isEquipmentManager && (
+            <PendingAccounts
+              accounts={pendingAccounts}
+              busy={busy}
+              runAction={runAction}
+              supabase={supabase}
             />
           )}
 
@@ -1487,7 +1576,7 @@ function PasswordRecoveryDialog({ supabase, onComplete }) {
   );
 }
 
-function BorrowingList({ rows, onRequestReturn, loading }) {
+function BorrowingList({ rows, onRequestReturn, onCancelRequest, loading }) {
   if (loading) return <LoadingPanel />;
   if (!rows.length) return <EmptyState title="No borrowing activity yet" copy="When you request equipment, updates will appear here." />;
   return (
@@ -1502,7 +1591,8 @@ function BorrowingList({ rows, onRequestReturn, loading }) {
           </div>
           <div className="loan-date"><span>Expected return</span><strong>{dateTimeLabel(item.expected_return)}</strong><small className={item.expected_return && String(item.expected_return).slice(0, 10) < new Date().toISOString().slice(0, 10) && ACTIVE_BORROWING.includes(item.status) ? "due-soon" : ""}>{item.location_of_use || "Location not set"}</small></div>
           <div className="loan-actions">
-            {["approved", "checked_out"].includes(item.status) && <button className="button-secondary" onClick={() => onRequestReturn(item)}>Request return</button>}
+            {item.status === "requested" && <button className="button-secondary" type="button" onClick={() => onCancelRequest(item)}>Cancel request</button>}
+            {["released", "overdue"].includes(item.status) && <button className="button-secondary" onClick={() => onRequestReturn(item)}>Request return</button>}
             {item.status === "return_requested" && <span className="return-note"><Clock3 size={14} /> Return requested</span>}
           </div>
         </article>
@@ -1511,7 +1601,7 @@ function BorrowingList({ rows, onRequestReturn, loading }) {
   );
 }
 
-function ReservationList({ rows, loading, admin = false }) {
+function ReservationList({ rows, loading, admin = false, onCancel }) {
   if (loading) return <LoadingPanel />;
   if (!rows.length) return <EmptyState title="No reservations yet" copy="Reserve equipment for an upcoming project from the equipment library." />;
   return (
@@ -1522,6 +1612,7 @@ function ReservationList({ rows, loading, admin = false }) {
           <div className="reservation-main"><strong>{item.equipment?.name || "Equipment"}</strong><span>{item.equipment?.asset_tag} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose || "No purpose specified"}{admin && item.requester_email ? ` · ${item.requester_email}` : ""}</span></div>
           <div className="reservation-dates"><strong>{dateLabel(item.start_date)} — {dateLabel(item.end_date)}</strong><span>{item.location_of_use || "Location not set"}</span></div>
           <StatusPill value={item.status} />
+          {!admin && item.status === "pending" && <button className="button-secondary" type="button" onClick={() => onCancel(item)}>Cancel request</button>}
         </article>
       ))}
     </div>
@@ -1546,17 +1637,134 @@ function BorrowingTable({ rows, loading }) {
   );
 }
 
-function AdminRequests({ borrowings, reservations, busy, runAction, supabase, canReview }) {
+function AdminRequests({ borrowings, reservations, busy, runAction, supabase, canReview, userId }) {
   const [borrowerSearch, setBorrowerSearch] = useState("");
+  const [pickupGraceMinutes, setPickupGraceMinutes] = useState("");
+  const [settingsError, setSettingsError] = useState("");
+  const [workflowError, setWorkflowError] = useState("");
+  const [overdueItems, setOverdueItems] = useState([]);
+  const [damageReports, setDamageReports] = useState([]);
+  const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const query = borrowerSearch.trim().toLocaleLowerCase();
   const matchesBorrower = (name, email) => !query
     || `${name || ""} ${email || ""}`.toLocaleLowerCase().includes(query)
     || String(name || "").toLocaleLowerCase().split(/\s+/).some((part) => part.startsWith(query));
+  useEffect(() => {
+    if (!canReview) return undefined;
+    let active = true;
+    async function loadOperationalData() {
+      const [settingsResult, overdueResult, reportResult] = await Promise.all([
+        supabase.from("reservation_settings")
+          .select("pickup_grace_period_minutes")
+          .eq("singleton", true)
+          .single(),
+        supabase.rpc("list_overdue_borrowings"),
+        supabase.rpc("list_damage_loss_reports"),
+      ]);
+      if (!active) return;
+      if (settingsResult.error) {
+        setSettingsError(`Reservation pickup settings could not be loaded: ${getErrorMessage(settingsResult.error)}`);
+      } else if (!settingsResult.data) {
+        setSettingsError("Reservation pickup settings are unavailable.");
+      } else {
+        setPickupGraceMinutes(String(settingsResult.data.pickup_grace_period_minutes));
+      }
+      const errors = [];
+      if (overdueResult.error) {
+        errors.push(`The overdue list could not be loaded: ${getErrorMessage(overdueResult.error)}`);
+        setOverdueItems([]);
+      } else {
+        setOverdueItems(overdueResult.data || []);
+      }
+      if (reportResult.error) {
+        errors.push(`Damage and loss reports could not be loaded: ${getErrorMessage(reportResult.error)}`);
+        setDamageReports([]);
+      } else {
+        setDamageReports(reportResult.data || []);
+      }
+      setWorkflowError(errors.join(" "));
+    }
+    loadOperationalData();
+    return () => { active = false; };
+  }, [canReview, supabase, workflowRefreshKey]);
+
+  async function savePickupGracePeriod(event) {
+    event.preventDefault();
+    const minutes = Number(pickupGraceMinutes);
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1440) {
+      setSettingsError("Enter a pickup grace period from 1 to 1440 minutes.");
+      return;
+    }
+    setSettingsError("");
+    await runAction(
+      () => supabase.from("reservation_settings")
+        .update({ pickup_grace_period_minutes: minutes })
+        .eq("singleton", true)
+        .select("pickup_grace_period_minutes")
+        .single(),
+      "Reservation pickup grace period updated.",
+    );
+  }
+
+  async function submitCondition(item, stage, condition, file, notes) {
+    const successMessage = stage === "release" ? "Equipment released to borrower." : "Equipment return recorded.";
+    const completed = await runAction(async () => {
+      const photoPath = await uploadItemConditionPhoto(
+        supabase,
+        userId,
+        file,
+        `${stage} condition`,
+      );
+      const rpcName = stage === "release" ? "release_equipment_borrowing" : "complete_equipment_return";
+      const { error } = await supabase.rpc(rpcName, {
+        p_borrowing_id: item.id,
+        p_condition: condition,
+        p_photo_path: photoPath,
+        p_condition_notes: notes || null,
+      });
+      if (error) {
+        if (photoPath) {
+          const { error: cleanupError } = await supabase.storage
+            .from("item-condition-photos")
+            .remove([photoPath]);
+          if (cleanupError) {
+            throw new Error(`${getErrorMessage(error)} The uploaded condition photo could not be removed: ${cleanupError.message}`);
+          }
+        }
+        throw error;
+      }
+      return { error: null };
+    }, successMessage);
+    if (completed) setWorkflowRefreshKey((key) => key + 1);
+  }
+
+  async function resolveReport(reportId, status, notes) {
+    const completed = await runAction(
+      () => supabase.rpc("resolve_damage_loss_report", {
+        p_report_id: reportId,
+        p_resolution_status: status,
+        p_resolution_notes: notes,
+      }),
+      "Damage or loss report updated.",
+    );
+    if (completed) setWorkflowRefreshKey((key) => key + 1);
+    return completed;
+  }
+
   const pendingBorrowings = borrowings.filter((item) =>
-    ["pending", "return_requested"].includes(item.status)
+    item.status === "requested"
+      && matchesBorrower(item.borrower_name, item.borrower_email));
+  const approvedBorrowings = borrowings.filter((item) =>
+    item.status === "approved"
+      && matchesBorrower(item.borrower_name, item.borrower_email));
+  const releasedBorrowings = borrowings.filter((item) =>
+    ["released", "overdue", "return_requested"].includes(item.status)
       && matchesBorrower(item.borrower_name, item.borrower_email));
   const pendingReservations = reservations.filter((item) =>
     item.status === "pending"
+      && matchesBorrower(item.requester_name, item.requester_email));
+  const approvedReservations = reservations.filter((item) =>
+    item.status === "approved" && !item.picked_up_at
       && matchesBorrower(item.requester_name, item.requester_email));
   return (
     <>
@@ -1564,7 +1772,28 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
         <label className="search-box"><Search size={18} /><input value={borrowerSearch} onChange={(event) => setBorrowerSearch(event.target.value)} placeholder="Search borrower first or last name" aria-label="Search borrower requests by first or last name" /><kbd>⌕</kbd></label>
         <span className="filter-caption">{pendingBorrowings.length + pendingReservations.length} matching requests</span>
       </div>
-      <div className="section-title"><div><h2>Borrowing & return requests</h2><p>{canReview ? "Review each member request before updating inventory status." : "Search requests using a borrower's first or last name."}</p></div><span className="record-count">{pendingBorrowings.length} to review</span></div>
+      {canReview && <div className="toolbar reservation-grace-toolbar">
+        <div className="reservation-grace-copy"><strong>Reservation pickup grace period</strong><small>Unpicked reservations expire this many minutes after their scheduled start.</small></div>
+        <form className="reservation-grace-form" onSubmit={savePickupGracePeriod}>
+          <label>
+            <span className="sr-only">Pickup grace period in minutes</span>
+            <input
+              type="number"
+              min="1"
+              max="1440"
+              step="1"
+              value={pickupGraceMinutes}
+              onChange={(event) => setPickupGraceMinutes(event.target.value)}
+              disabled={busy || !pickupGraceMinutes}
+              required
+            />
+          </label>
+          <span>minutes</span>
+          <button className="button-primary" type="submit" disabled={busy || !pickupGraceMinutes}>Save</button>
+        </form>
+        {settingsError && <p className="reservation-grace-error" role="alert">{settingsError}</p>}
+      </div>}
+      <div className="section-title"><div><h2>Borrowing requests</h2><p>{canReview ? "Review new requests before approving the scheduled release." : "Search requests using a borrower's first or last name."}</p></div><span className="record-count">{pendingBorrowings.length} to review</span></div>
       {!pendingBorrowings.length ? <EmptyState title={query ? "No matching borrowing requests" : "All caught up"} copy={query ? "Try another first or last name." : "There are no borrowing or return requests waiting for review."} /> : (
         <div className="admin-request-list">
           {pendingBorrowings.map((item) => (
@@ -1572,15 +1801,83 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
               <div className="loan-art"><Laptop size={23} /></div>
               <div className="admin-request-main"><div className="loan-card-heading"><span className="card-category">{item.equipment?.asset_tag}</span><StatusPill value={item.status} /></div><h2>{item.equipment?.name || "Equipment"}</h2><p>{item.borrower_name} · {item.borrower_email || item.borrower_id} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose}</p><small>{dateLabel(item.start_date)} – {dateTimeLabel(item.expected_return)} · {item.location_of_use}</small></div>
               {canReview && <div className="admin-actions">
-                {item.status === "pending" ? <>
-                  <button className="button-secondary" disabled={busy} onClick={() => runAction(() => supabase.rpc("review_borrowing_request", { p_borrowing_id: item.id, p_action: "reject" }), "Request declined.")}>Decline</button>
-                  <button className="button-primary" disabled={busy} onClick={() => runAction(() => supabase.rpc("review_borrowing_request", { p_borrowing_id: item.id, p_action: "approve" }), "Borrowing request approved.")}><Check size={15} /> Approve</button>
-                </> : <button className="button-primary" disabled={busy} onClick={() => runAction(() => supabase.rpc("complete_equipment_return", { p_borrowing_id: item.id }), "Equipment marked as returned.")}><CheckCircle2 size={15} /> Confirm return</button>}
+                <DeclineRequestControl
+                  busy={busy}
+                  onDecline={(reason) => runAction(
+                    () => supabase.rpc("review_borrowing_request", {
+                      p_borrowing_id: item.id,
+                      p_action: "reject",
+                      p_decline_reason: reason,
+                    }),
+                    "Request declined.",
+                  )}
+                />
+                <button className="button-primary" disabled={busy} onClick={() => runAction(() => supabase.rpc("review_borrowing_request", { p_borrowing_id: item.id, p_action: "approve" }), "Borrowing request approved.")}><Check size={15} /> Approve</button>
               </div>}
             </article>
           ))}
         </div>
       )}
+      <div className="section-title"><div><h2>Approved — awaiting release</h2><p>Record the condition and optional photo when equipment is handed to the borrower.</p></div><span className="record-count">{approvedBorrowings.length} approved</span></div>
+      {!approvedBorrowings.length ? <EmptyState title="No approved borrowing requests awaiting release" copy={query ? "Try another first or last name." : "Approved requests will appear here until equipment is released."} /> : (
+        <div className="admin-request-list">
+          {approvedBorrowings.map((item) => (
+            <article className="admin-request" key={item.id}>
+              <div className="loan-art"><Laptop size={23} /></div>
+              <div className="admin-request-main"><div className="loan-card-heading"><span className="card-category">{item.equipment?.asset_tag}</span><StatusPill value={item.status} /></div><h2>{item.equipment?.name || "Equipment"}</h2><p>{item.borrower_name} · {item.borrower_email} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose}</p><small>{dateLabel(item.start_date)} – {dateTimeLabel(item.expected_return)} · {item.location_of_use}</small></div>
+              {canReview && <WorkflowConditionAction
+                stage="release"
+                busy={busy}
+                onSubmit={(condition, file, notes) => submitCondition(item, "release", condition, file, notes)}
+              />}
+            </article>
+          ))}
+        </div>
+      )}
+      <div className="section-title"><div><h2>Released — awaiting return</h2><p>Record the received condition; damage or loss reports are created when applicable.</p></div><span className="record-count">{releasedBorrowings.length} released</span></div>
+      {!releasedBorrowings.length ? <EmptyState title="No released equipment awaiting return" copy={query ? "Try another first or last name." : "Released equipment will appear here until staff record its return."} /> : (
+        <div className="admin-request-list">
+          {releasedBorrowings.map((item) => (
+            <article className="admin-request" key={item.id}>
+              <div className="loan-art"><Laptop size={23} /></div>
+              <div className="admin-request-main"><div className="loan-card-heading"><span className="card-category">{item.equipment?.asset_tag}</span><StatusPill value={item.status} /></div><h2>{item.equipment?.name || "Equipment"}</h2><p>{item.borrower_name} · {item.borrower_email} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose}</p><small>Due {dateTimeLabel(item.expected_return)} · {item.location_of_use}{item.status === "return_requested" ? " · Return requested" : ""}</small></div>
+              {canReview && <WorkflowConditionAction
+                stage="return"
+                busy={busy}
+                onSubmit={(condition, file, notes) => submitCondition(item, "return", condition, file, notes)}
+              />}
+            </article>
+          ))}
+        </div>
+      )}
+      {canReview && <>
+        <div className="section-title"><div><h2>Overdue items</h2><p>Borrowers with overdue items cannot submit new borrowing or reservation requests.</p></div><span className="record-count">{overdueItems.length} overdue</span></div>
+        {workflowError && <p className="reservation-grace-error" role="alert">{workflowError}</p>}
+        {!overdueItems.length ? <EmptyState title="No overdue items" copy="Items past their return date will be listed here after the daily overdue check." /> : (
+          <div className="table-wrap inventory-table">
+            <table><thead><tr><th>Equipment</th><th>Borrower</th><th>Contact</th><th>Due</th><th>Quantity</th></tr></thead>
+              <tbody>{overdueItems.map((item) => <tr key={item.borrowing_item_id}>
+                <td><strong>{item.equipment_name}</strong><small>{item.asset_code}</small></td>
+                <td><strong>{item.borrower_name}</strong><small>{item.department || "Department not set"}</small></td>
+                <td><a href={`mailto:${encodeURIComponent(item.borrower_email)}`}>{item.borrower_email}</a>{item.borrower_phone && <small>{item.borrower_phone}</small>}</td>
+                <td>{dateTimeLabel(item.expected_return_at)}</td>
+                <td>{item.quantity}</td>
+              </tr>)}</tbody>
+            </table>
+          </div>
+        )}
+        <div className="section-title"><div><h2>Damage and loss reports</h2><p>Track follow-up and resolution for reported damage or lost items.</p></div><span className="record-count">{damageReports.length} reports</span></div>
+        {!damageReports.length ? <EmptyState title="No damage or loss reports" copy="Reports will be created when staff record damaged or lost equipment." /> : (
+          <div className="admin-request-list">
+            {damageReports.map((report) => <DamageLossReportControl
+              key={report.report_id}
+              report={report}
+              busy={busy}
+              onSave={(status, notes) => resolveReport(report.report_id, status, notes)}
+            />)}
+          </div>
+        )}
+      </>}
       <div className="section-title"><div><h2>Reservation requests</h2><p>Check availability before confirming upcoming dates.</p></div><span className="record-count">{pendingReservations.length} to review</span></div>
       {!pendingReservations.length ? <EmptyState title={query ? "No matching reservation requests" : "No reservations to review"} copy={query ? "Try another first or last name." : "New reservation requests will appear here."} /> : (
         <div className="admin-request-list">
@@ -1589,14 +1886,140 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
               <span className="reservation-icon"><CalendarDays size={19} /></span>
               <div className="admin-request-main"><div className="loan-card-heading"><span className="card-category">{item.equipment?.asset_tag}</span><StatusPill value={item.status} /></div><h2>{item.equipment?.name || "Equipment"}</h2><p>{item.requester_name} · {item.requester_email || item.requester_id} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose}</p><small>{dateLabel(item.start_date)} – {dateLabel(item.end_date)} · {item.location_of_use}</small></div>
               {canReview && <div className="admin-actions">
-                <button className="button-secondary" disabled={busy} onClick={() => runAction(() => supabase.rpc("review_equipment_reservation", { p_reservation_id: item.id, p_action: "reject" }), "Reservation declined.")}>Decline</button>
+                <DeclineRequestControl
+                  busy={busy}
+                  onDecline={(reason) => runAction(
+                    () => supabase.rpc("review_equipment_reservation", {
+                      p_reservation_id: item.id,
+                      p_action: "reject",
+                      p_decline_reason: reason,
+                    }),
+                    "Reservation declined.",
+                  )}
+                />
                 <button className="button-primary" disabled={busy} onClick={() => runAction(() => supabase.rpc("review_equipment_reservation", { p_reservation_id: item.id, p_action: "approve" }), "Reservation approved.")}><Check size={15} /> Approve</button>
               </div>}
             </article>
           ))}
         </div>
       )}
+      <div className="section-title"><div><h2>Approved reservations awaiting pickup</h2><p>Mark reservations picked up so they are not automatically released.</p></div><span className="record-count">{approvedReservations.length} awaiting pickup</span></div>
+      {!approvedReservations.length ? <EmptyState title="No approved reservations awaiting pickup" copy={query ? "Try another first or last name." : "Approved reservations will appear here until they are picked up or their pickup grace period expires."} /> : (
+        <div className="admin-request-list">
+          {approvedReservations.map((item) => (
+            <article className="admin-request" key={item.id}>
+              <span className="reservation-icon"><CalendarDays size={19} /></span>
+              <div className="admin-request-main"><div className="loan-card-heading"><span className="card-category">{item.equipment?.asset_tag}</span><StatusPill value={item.status} /></div><h2>{item.equipment?.name || "Equipment"}</h2><p>{item.requester_name} · {item.requester_email || item.requester_id} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose}</p><small>{dateLabel(item.start_date)} – {dateLabel(item.end_date)} · {item.location_of_use}</small></div>
+              {canReview && <div className="admin-actions">
+                <button className="button-primary" disabled={busy} onClick={() => runAction(
+                  () => supabase.rpc("mark_reservation_picked_up", { p_reservation_id: item.id }),
+                  "Reservation marked as picked up.",
+                )}><CheckCircle2 size={15} /> Mark picked up</button>
+              </div>}
+            </article>
+          ))}
+        </div>
+      )}
     </>
+  );
+}
+
+function DeclineRequestControl({ busy, onDecline }) {
+  const [reason, setReason] = useState("");
+
+  async function submit(event) {
+    event.preventDefault();
+    const declineReason = reason.trim();
+    if (!declineReason) return;
+    if (await onDecline(declineReason)) setReason("");
+  }
+
+  return (
+    <form className="admin-actions" onSubmit={submit}>
+      <label>
+        <span className="sr-only">Reason for declining this request</span>
+        <input
+          value={reason}
+          onChange={(event) => setReason(event.target.value)}
+          placeholder="Reason required"
+          maxLength={500}
+          required
+        />
+      </label>
+      <button className="button-secondary" type="submit" disabled={busy || !reason.trim()}>Decline</button>
+    </form>
+  );
+}
+
+function WorkflowConditionAction({ stage, busy, onSubmit }) {
+  const [condition, setCondition] = useState("good");
+  const [notes, setNotes] = useState("");
+
+  function submit(event) {
+    event.preventDefault();
+    const form = new FormData(event.currentTarget);
+    onSubmit(condition, form.get("condition_photo"), notes.trim());
+  }
+
+  const needsReport = stage === "release"
+    ? condition === "damaged"
+    : ["damaged", "lost"].includes(condition);
+  const isRelease = stage === "release";
+
+  return (
+    <form className="workflow-condition-form" onSubmit={submit}>
+      <label>
+        <span>{isRelease ? "Condition at release" : "Condition at return"}</span>
+        <select value={condition} onChange={(event) => setCondition(event.target.value)} disabled={busy}>
+          <option value="good">Good</option>
+          <option value="fair">Fair</option>
+          <option value="damaged">Damaged</option>
+          {!isRelease && <option value="lost">Lost</option>}
+        </select>
+      </label>
+      {needsReport && <label>
+        <span>{condition === "lost" ? "Loss details" : "Damage details"}</span>
+        <textarea value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={2000} rows="2" required disabled={busy} />
+      </label>}
+      <label>
+        <span>Condition photo (optional)</span>
+        <input name="condition_photo" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} />
+      </label>
+      <button className="button-primary" type="submit" disabled={busy || (needsReport && !notes.trim())}>
+        {isRelease ? "Record release" : "Receive return"}
+      </button>
+    </form>
+  );
+}
+
+function DamageLossReportControl({ report, busy, onSave }) {
+  const [status, setStatus] = useState(report.resolution_status);
+  const [notes, setNotes] = useState(report.resolution_notes || "");
+
+  function submit(event) {
+    event.preventDefault();
+    onSave(status, notes.trim());
+  }
+
+  return (
+    <article className="admin-request damage-report-row">
+      <div className="admin-request-main">
+        <div className="loan-card-heading"><span className="card-category">{report.asset_code} · {report.report_type}</span><StatusPill value={report.resolution_status} /></div>
+        <h2>{report.equipment_name}</h2>
+        <p>{report.borrower_name} · {report.borrower_email}</p>
+        <small>{report.description} · Reported {dateTimeLabel(report.created_at)}</small>
+      </div>
+      <form className="damage-report-resolution" onSubmit={submit}>
+        <label><span>Resolution</span><select value={status} onChange={(event) => setStatus(event.target.value)} disabled={busy}>
+          <option value="open">Open</option>
+          <option value="under_review">Under review</option>
+          <option value="resolved">Resolved</option>
+          <option value="waived">Waived</option>
+        </select></label>
+        <label><span>Resolution notes</span><textarea value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={2000} rows="2" disabled={busy} required={["resolved", "waived"].includes(status)} /></label>
+        <button className="button-secondary" type="submit" disabled={busy || (["resolved", "waived"].includes(status) && !notes.trim())}>Save resolution</button>
+      </form>
+    </article>
   );
 }
 
@@ -1696,7 +2119,7 @@ function CurrentlyBorrowedWorkspace({ rows, categories, loading }) {
   const borrowedRows = rows.filter((item) => item.record_type === "borrow" && matchesFilters(item));
   const reservedRows = rows.filter((item) => item.record_type === "reservation" && matchesFilters(item));
   const summary = [
-    ["borrowed", "Borrowed"],
+    ["released", "Released / on loan"],
     ["overdue", "Overdue"],
     ["reserved", "Reserved"],
   ];
@@ -1714,7 +2137,7 @@ function CurrentlyBorrowedWorkspace({ rows, categories, loading }) {
         <span className="filter-caption">{visibleRows.length} records</span>
       </div>
       <div className="tracking-table-tabs" role="tablist" aria-label="Equipment tracking tables">
-        <button type="button" role="tab" aria-selected={activeTable === "borrowed"} className={activeTable === "borrowed" ? "active" : ""} onClick={() => setActiveTable("borrowed")}>Borrowed equipments <span>{borrowedRows.length}</span></button>
+        <button type="button" role="tab" aria-selected={activeTable === "borrowed"} className={activeTable === "borrowed" ? "active" : ""} onClick={() => setActiveTable("borrowed")}>Released equipment <span>{borrowedRows.length}</span></button>
         <button type="button" role="tab" aria-selected={activeTable === "reserved"} className={activeTable === "reserved" ? "active" : ""} onClick={() => setActiveTable("reserved")}>Reserved equipment <span>{reservedRows.length}</span></button>
       </div>
       {!visibleRows.length ? <EmptyState title={rows.length ? "No matching equipment" : "No tracking records available"} copy={rows.length ? "Try a different search, category, or status filter." : "Equipment inventory, reservations, checkouts, and returns will appear here."} /> : <div className="table-wrap tracking-table-wrap">
@@ -1801,7 +2224,8 @@ function MemberTable({ members, currentUserId, runAction, supabase }) {
               <select
                 aria-label={`Change role for ${member.display_name || member.email}`}
                 value={member.role}
-                disabled={member.id === currentUserId}
+                disabled={member.id === currentUserId || member.account_status !== "active"}
+                title={member.account_status === "pending" ? "Approve account access before assigning a role." : undefined}
                 onChange={(event) => runAction(
                   () => supabase.rpc("set_profile_role", { p_user_id: member.id, p_role: event.target.value }),
                   "Member role updated.",
@@ -1817,6 +2241,61 @@ function MemberTable({ members, currentUserId, runAction, supabase }) {
         ))}</tbody>
       </table>
       <p className="table-note">Your own role cannot be changed here. Ask another administrator if you need to change your access.</p>
+    </div>
+  );
+}
+
+function PendingAccounts({ accounts, busy, runAction, supabase }) {
+  if (!accounts.length) {
+    return <EmptyState title="No accounts awaiting approval" copy="New borrower accounts will appear here after email verification." />;
+  }
+  return (
+    <div className="table-wrap inventory-table">
+      <table>
+        <thead><tr><th>Applicant</th><th>Requested</th><th>Decision</th></tr></thead>
+        <tbody>{accounts.map((account) => (
+          <tr key={account.id}>
+            <td>
+              <strong>{account.full_name || "Unnamed member"}</strong>
+              <small>{account.email || "Email not available"}</small>
+            </td>
+            <td>{dateLabel(account.created_at?.slice(0, 10))}</td>
+            <td>
+              <div className="card-actions">
+                <button
+                  className="button-primary"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => runAction(
+                    () => supabase.rpc("review_borrower_access", {
+                      p_user_id: account.id,
+                      p_decision: "approve",
+                    }),
+                    "Borrower account approved.",
+                  )}
+                >
+                  Approve
+                </button>
+                <button
+                  className="button-danger"
+                  type="button"
+                  disabled={busy}
+                  onClick={() => runAction(
+                    () => supabase.rpc("review_borrower_access", {
+                      p_user_id: account.id,
+                      p_decision: "reject",
+                    }),
+                    "Borrower account rejected.",
+                  )}
+                >
+                  Reject
+                </button>
+              </div>
+            </td>
+          </tr>
+        ))}</tbody>
+      </table>
+      <p className="table-note">Only administrators and property custodians can approve or reject access. Each decision is recorded in the account access audit log.</p>
     </div>
   );
 }

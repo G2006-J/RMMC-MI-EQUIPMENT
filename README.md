@@ -7,6 +7,8 @@ A browser-first, installable PWA built with Next.js, React, Tailwind CSS, and Su
 1. Install Node.js 20.19 or newer.
 2. Copy `.env.example` to `.env.local` and set the Supabase project URL and publishable key.
 3. In the Supabase project's SQL Editor, create the app's database schema by running [`supabase/migrations/202610280001_create_equipment_schema.sql`](./supabase/migrations/202610280001_create_equipment_schema.sql), followed by [`supabase/migrations/202610230002_align_existing_schema.sql`](./supabase/migrations/202610230002_align_existing_schema.sql), [`supabase/migrations/202610230003_auto_create_student_borrowers.sql`](./supabase/migrations/202610230003_auto_create_student_borrowers.sql), [`supabase/migrations/202610280002_add_account_profile_details.sql`](./supabase/migrations/202610280002_add_account_profile_details.sql), [`supabase/migrations/202610260001_equipment_images_quantity.sql`](./supabase/migrations/202610260001_equipment_images_quantity.sql), [`supabase/migrations/202610270001_allow_multiple_equipment_requests.sql`](./supabase/migrations/202610270001_allow_multiple_equipment_requests.sql), [`supabase/migrations/202610270002_equipment_available_quantities.sql`](./supabase/migrations/202610270002_equipment_available_quantities.sql), [`supabase/migrations/202610270003_approved_requests_only_reduce_availability.sql`](./supabase/migrations/202610270003_approved_requests_only_reduce_availability.sql), [`supabase/migrations/202611010001_security_hardening_and_role_access.sql`](./supabase/migrations/202611010001_security_hardening_and_role_access.sql), [`supabase/migrations/202611010002_borrower_request_search_and_account_names.sql`](./supabase/migrations/202611010002_borrower_request_search_and_account_names.sql), [`supabase/migrations/202611020001_feedback_moderation_and_profile_fields.sql`](./supabase/migrations/202611020001_feedback_moderation_and_profile_fields.sql), and [`supabase/migrations/202611020002_profile_photos_and_currently_borrowed_workspace.sql`](./supabase/migrations/202611020002_profile_photos_and_currently_borrowed_workspace.sql), in that order. Then apply [`supabase/migrations/202611020003_borrowed_and_reservations_admin_view.sql`](./supabase/migrations/202611020003_borrowed_and_reservations_admin_view.sql), [`supabase/migrations/202611020004_equipment_tracking_statuses.sql`](./supabase/migrations/202611020004_equipment_tracking_statuses.sql), and [`supabase/migrations/202611020005_request_quantities_and_custodian_approvals.sql`](./supabase/migrations/202611020005_request_quantities_and_custodian_approvals.sql), in that order. The baseline creates the core tables and a `General` category for a new project; the following migrations add policies and borrowing, feedback, image, quantity, and security workflows. If your project already has these core tables, skip the baseline migration and use the schema-alignment migrations as appropriate. Do **not** run the earlier `202610220001_equipment_borrowing.sql` or `202610230001_equipment_feedback_audit.sql` migrations; they use the app's original, different schema.
+   After those migrations, apply [`supabase/migrations/202611030001_borrower_account_approval_and_user_link.sql`](./supabase/migrations/202611030001_borrower_account_approval_and_user_link.sql) and [`supabase/migrations/202611030002_request_integrity_and_reservation_expiry.sql`](./supabase/migrations/202611030002_request_integrity_and_reservation_expiry.sql), in order. The second migration adds serialized request approvals, borrower cancellation, required decline reasons, and reservation pickup expiry.
+   Then review and apply [`supabase/migrations/202611030003_borrowing_release_overdue_and_audit.sql`](./supabase/migrations/202611030003_borrowing_release_overdue_and_audit.sql). It separates approval from release, records release and return conditions, reports damage or loss, and adds daily overdue checks. Released and overdue items continue reducing available stock; damaged returns are placed in maintenance, and lost quantities are removed from inventory. Run [`supabase/tests/borrowing_release_overdue.sql`](./supabase/tests/borrowing_release_overdue.sql) against a local Supabase database after applying the migration.
 4. Install dependencies and start the app:
 
    ```powershell
@@ -80,30 +82,44 @@ New accounts receive the `staff` role. After creating and confirming your own ac
 
 ```sql
 update public.profiles
-set role = 'admin'
+set role = 'admin',
+    account_status = 'active',
+    updated_at = now()
 where id = (
+  select id
+  from auth.users
+  where email = 'your-institutional-email@example.org'
+);
+
+update public.borrowers
+set status = 'active'
+where user_id = (
   select id
   from auth.users
   where email = 'your-institutional-email@example.org'
 );
 ```
 
+`active` is the database's approved account status. Bootstrap the first administrator only after applying the borrower-account approval migration; this sets both the profile and linked borrower to active so the administrator is not left pending.
+
 Only the `admin` role can add, edit, or remove equipment. Equipment changes are recorded in `equipment_audit_log`, and removal is soft-deletion so borrowing history remains intact. `admin` and `property_custodian` roles can review borrowing and reservation requests. Profile role values remain `admin`, `property_custodian`, and `staff`; users cannot change their own role.
 
 ## Included workflows
 
 - Supabase email-code sign-in, password-based account registration with signup-code verification, password reset, and cookie refresh.
-- New signups automatically receive a profile and an active `student` borrower row with a generated borrower number; the borrower migration also backfills existing email accounts that predate the schema.
+- New signups automatically receive a pending profile and `student` borrower row with a generated borrower number. An administrator or property custodian must approve the account before the borrower can submit requests.
 - Equipment search, category filters, equipment status, storage location, and administrator-only inventory management with a database-backed change history.
 - Shared member/admin feedback discussions with replies and administrator-managed status updates.
 - Borrowing and reservation requests linked to the existing `borrowers`, `borrowings`, `borrowing_items`, and `equipment` records, with administrator/property-custodian review and return confirmation. Available amounts decrease for active borrowing requests and return after staff confirm the return; overlapping requests are accepted only up to the equipment quantity.
+- Borrowings follow `requested → approved → released → returned`; release and return record the responsible staff member, timestamps, condition, and optional private photo. Damage and loss reports require manager resolution. A daily job flags overdue items, shows staff borrower contact details, and blocks borrowers with overdue equipment from submitting borrowing or reservation requests.
+- Borrowers can cancel pending requests, staff must provide a decline reason, and managers can configure the reservation pickup grace period (1–1440 minutes; 30 minutes by default). Unpicked approved reservations expire automatically.
 - Member activity, manager request queues, borrowing history, and CSV report export.
 - Installable PWA manifest and an offline page. Private workspace data is never cached by the service worker.
 
 ## Notes
 
 - The publishable Supabase key is intended for browser use. Never put a Supabase service-role key in `.env.local` or client code.
-- Borrowing and reservation requests require an active borrower row whose email matches the signed-in account.
+- Borrowing and reservation requests require an active borrower row linked to the signed-in account by `user_id`.
 - If Supabase reports missing tables or functions, ensure the migration ran successfully in the project that matches `.env.local`.
 - To create a production build, run `npm run build`, then `npm start`.
 #   R M M C - M I - E q u i p m e n t - B o r r o w i n g - S y s t e m  

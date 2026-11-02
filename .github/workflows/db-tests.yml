@@ -1,0 +1,140 @@
+name: Database tests
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  database-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install Supabase CLI
+        uses: supabase/setup-cli@v1
+        with:
+          version: latest
+
+      - name: Install PostgreSQL client
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes postgresql-client
+
+      - name: Stage migrations in dependency order
+        run: bash .github/scripts/prepare-db-test-project.sh "$RUNNER_TEMP/rmmc-db-tests"
+
+      - name: Start local Supabase
+        run: supabase --workdir "$RUNNER_TEMP/rmmc-db-tests" start
+
+      - name: Reset local database
+        run: supabase --workdir "$RUNNER_TEMP/rmmc-db-tests" db reset
+
+      - name: Create active admin and student fixtures
+        env:
+          SUPABASE_WORKDIR: ${{ runner.temp }}/rmmc-db-tests
+        run: |
+          set -euo pipefail
+          eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
+
+          curl --fail --silent --show-error \
+            --request POST "$API_URL/auth/v1/admin/users" \
+            --header "apikey: $SERVICE_ROLE_KEY" \
+            --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"email":"ci-admin@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Admin"}}' \
+            >/dev/null
+          curl --fail --silent --show-error \
+            --request POST "$API_URL/auth/v1/admin/users" \
+            --header "apikey: $SERVICE_ROLE_KEY" \
+            --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"email":"ci-student@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Student","course":"CI"}}' \
+            >/dev/null
+
+          psql --set ON_ERROR_STOP=1 "$DB_URL" <<'SQL'
+          update public.profiles
+          set role = 'admin', account_status = 'active'
+          where email = 'ci-admin@example.com';
+
+          update public.profiles
+          set role = 'staff', account_status = 'active'
+          where email = 'ci-student@example.com';
+
+          update public.borrowers
+          set status = 'active'
+          where email = 'ci-student@example.com'
+            and user_id = (select id from auth.users where email = 'ci-student@example.com');
+
+          do $$
+          begin
+            if not exists (
+              select 1 from public.profiles
+              where email = 'ci-admin@example.com'
+                and role = 'admin' and account_status = 'active'
+            ) then
+              raise exception 'Failed to create the active admin fixture.';
+            end if;
+            if not exists (
+              select 1
+              from public.borrowers b
+              join public.profiles p on p.id = b.user_id
+              where b.email = 'ci-student@example.com'
+                and b.status = 'active'
+                and p.role = 'staff'
+                and p.account_status = 'active'
+            ) then
+              raise exception 'Failed to create the active student fixture.';
+            end if;
+          end;
+          $$;
+          SQL
+
+      - name: Run every SQL test
+        env:
+          SUPABASE_WORKDIR: ${{ runner.temp }}/rmmc-db-tests
+        run: |
+          set -euo pipefail
+          eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
+
+          shopt -s nullglob
+          tests=(supabase/tests/*.sql)
+          if (( ${#tests[@]} == 0 )); then
+            echo "No SQL tests found in supabase/tests/." >&2
+            exit 1
+          fi
+          for test_file in "${tests[@]}"; do
+            echo "Running $test_file"
+            psql --set ON_ERROR_STOP=1 --set race_barrier=off \
+              --file "$test_file" "$DB_URL"
+          done
+
+      - name: Prove the concurrency test catches a missing lock
+        env:
+          SUPABASE_WORKDIR: ${{ runner.temp }}/rmmc-db-tests
+        run: |
+          set -euo pipefail
+          eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
+          psql --set ON_ERROR_STOP=1 \
+            --file .github/scripts/remove-approval-equipment-lock.sql "$DB_URL"
+
+          mutation_log="$RUNNER_TEMP/concurrency-lock-mutation.log"
+          if psql --set ON_ERROR_STOP=1 --set race_barrier=on \
+            --file supabase/tests/request_integrity_concurrency.sql "$DB_URL" \
+            >"$mutation_log" 2>&1; then
+            cat "$mutation_log"
+            echo "Concurrency test unexpectedly passed without the equipment row lock." >&2
+            exit 1
+          fi
+
+          if ! grep --fixed-strings \
+            "got 2 successes, 2 approved, 0 requested." "$mutation_log" >/dev/null; then
+            cat "$mutation_log"
+            echo "Concurrency test failed for a reason other than the expected oversubscription." >&2
+            exit 1
+          fi
+          echo "PASS: removing the approval lock makes the concurrency test detect oversubscription."

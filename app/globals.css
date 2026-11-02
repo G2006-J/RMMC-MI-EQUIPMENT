@@ -172,6 +172,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .section-title p { margin: 5px 0 0; color: #8a948d; font-size: 10px; }
 .text-action { display: inline-flex; align-items: center; gap: 5px; padding: 6px 0; border: 0; color: #527334; background: transparent; font-size: 10px; font-weight: 700; }
 .toolbar { min-height: 66px; margin-top: 26px; padding: 12px; display: flex; align-items: center; gap: 13px; border: 1px solid #e5e8e2; border-radius: 13px; background: white; box-shadow: 0 5px 25px rgba(32,55,41,.035); }
+.reservation-grace-toolbar { justify-content: space-between; flex-wrap: wrap; }
+.workflow-condition-form, .damage-report-resolution { display: grid; gap: 8px; min-width: 190px; }
+.workflow-condition-form label, .damage-report-resolution label { display: grid; gap: 4px; color: #647168; font-size: 9px; }
+.workflow-condition-form select, .damage-report-resolution select, .workflow-condition-form textarea, .damage-report-resolution textarea { width: 100%; min-height: 34px; padding: 6px 8px; border: 1px solid #e5e8e2; border-radius: 7px; color: #26372d; background: #fff; font: inherit; }
+.workflow-condition-form textarea, .damage-report-resolution textarea { resize: vertical; }
+.workflow-condition-form input[type="file"] { max-width: 210px; color: #647168; font-size: 9px; }
+.damage-report-row { align-items: flex-start; }
+.damage-report-resolution { min-width: min(100%, 240px); }
+.reservation-grace-copy { display: grid; gap: 4px; color: #27382e; font-size: 11px; }
+.reservation-grace-copy small { color: #8a948d; font-size: 9px; }
+.reservation-grace-form { display: flex; align-items: center; gap: 8px; color: #818b84; font-size: 10px; }
+.reservation-grace-form input { width: 82px; min-height: 36px; padding: 0 8px; border: 1px solid #eceeea; border-radius: 7px; color: #26372d; background: #f6f7f4; }
+.reservation-grace-error { flex-basis: 100%; margin: 0; color: #a45f4b; font-size: 10px; }
 .request-search-toolbar .search-box { width: min(100%, 520px); }
 .search-box { width: 305px; min-height: 40px; flex: none; display: flex; align-items: center; gap: 9px; padding: 0 11px; border: 1px solid #eceeea; border-radius: 8px; color: #849087; background: #f6f7f4; }
 .search-box:focus-within { border-color: #8aab52; box-shadow: 0 0 0 3px #edf3e4; }
