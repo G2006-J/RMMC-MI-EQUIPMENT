@@ -85,6 +85,12 @@ begin
   v_version:=public.publish_borrower_agreement('P7 agreement','Temporary test agreement.');
   if (select count(*) from public.phase7_audit_log where event_type='agreement_version_published' and entity_id=v_version::text and actor_id=v_admin)<>1 then raise exception 'Agreement publication must be logged once.'; end if;
 
+  select count(*) into v_count from public.phase7_audit_log;
+  v_result:=public.get_equipment_csv_template();
+  if jsonb_array_length(v_result->'headers')=0 or (select count(*) from public.phase7_audit_log)<>v_count then
+    raise exception 'Downloading the CSV template must not create an audit row.';
+  end if;
+
   v_result:=public.import_equipment_csv(jsonb_build_array(
     jsonb_build_object('asset_code',v_code||'-bad','equipment_name','Rejected','category_name','missing','tracking_mode','quantity','quantity','1'),
     jsonb_build_object('asset_code','','equipment_name','Rejected','category_name','missing','tracking_mode','quantity','quantity','1')
@@ -143,6 +149,7 @@ $$;
 do $$
 declare v_admin uuid; v_staff uuid; v_custodian uuid; v_result jsonb; v_table text; v_set text; v_trigger text; v_report_type text;
   v_equipment bigint; v_unit bigint; v_asset_tag text; v_expected_back timestamptz;
+  v_maintenance_id bigint;
 begin
   select id into v_admin from public.profiles where role='admin' and account_status='active' order by created_at limit 1;
   select id into v_staff from public.profiles where role='staff' and account_status='active' order by created_at limit 1;
@@ -174,13 +181,14 @@ begin
     values('P7-IMMUTABLE-'||replace(gen_random_uuid()::text,'-',''),'Immutable fixture',
       (select category_id from public.categories order by category_id limit 1),1,'unit','available') returning equipment_id into v_equipment;
   v_asset_tag:='P7-IMMUTABLE-'||replace(gen_random_uuid()::text,'-','');
-  insert into public.equipment_units(equipment_id,asset_tag,status)
+  insert into public.equipment_units(equipment_id,asset_tag,status,calibration_due_at)
     values(v_equipment,v_asset_tag,'available',current_date) returning unit_id into v_unit;
   insert into public.equipment_unit_audit(unit_id,equipment_id,actor_id,action,new_values)
     values(v_unit,v_equipment,v_admin,'insert','{"status":"available"}'::jsonb);
-  insert into public.unit_maintenance_log(unit_id,reason,started_at,completed_at,recorded_by)
-    values(v_unit,'Old-style completed maintenance',now()-interval '2 days',now()-interval '1 day',v_admin);
-  if public.phase7_unit_maintenance_is_open((select max(maintenance_id) from public.unit_maintenance_log where unit_id=v_unit)) then
+  insert into public.unit_maintenance_log(unit_id,reason,started_at,completed_at,recorded_by,closes_maintenance_id)
+    values(v_unit,'Old-style completed maintenance',now()-interval '2 days',now()-interval '1 day',v_admin,null)
+    returning maintenance_id into v_maintenance_id;
+  if public.phase7_unit_maintenance_is_open(v_maintenance_id) then
     raise exception 'An old-style completed maintenance row must not be open.';
   end if;
   select expected_back_at into v_expected_back
@@ -190,6 +198,12 @@ begin
     raise exception 'The calibration due list treated an old completed row as active maintenance.';
   end if;
   v_result:=public.get_phase7_audit_history(0,null,null,null,null,null,true);
+  if not exists(select 1 from jsonb_array_elements(v_result->'rows') r
+    where r.value->>'source_table'='unit_maintenance_log'
+      and r.value->>'entity_id'=v_maintenance_id::text
+      and r.value->>'event_type'='maintenance_completed') then
+    raise exception 'The old-style completed maintenance row must appear in audit history.';
+  end if;
   foreach v_table in array array['phase7_audit_log','equipment_audit_log','borrowing_workflow_audit','account_access_audit_log','borrower_agreement_audit_log','equipment_unit_audit','equipment_import_audit','unit_maintenance_log'] loop
     if not exists(select 1 from jsonb_array_elements(v_result->'rows') r where r.value->>'source_table'=v_table) then raise exception 'Audit history union is missing %.',v_table; end if;
   end loop;

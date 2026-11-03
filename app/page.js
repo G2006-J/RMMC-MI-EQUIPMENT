@@ -2,7 +2,9 @@
 
 import {
   Activity,
+  ArrowLeft,
   ArrowLeftRight,
+  ArrowRight,
   ArrowUpRight,
   Bell,
   CalendarDays,
@@ -11,6 +13,7 @@ import {
   CheckCircle2,
   ClipboardList,
   Clock3,
+  Download,
   FileBarChart,
   Filter,
   HardDrive,
@@ -35,7 +38,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient as createAuthClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import InstallAppButton from "./install-app-button";
-import { AuditLogWorkspace, ReportsWorkspace } from "./phase7-workspaces";
 
 const MEMBER_NAV_ITEMS = [
   { id: "equipment", label: "Equipment", icon: Package },
@@ -49,7 +51,6 @@ const ADMIN_NAV_ITEMS = [
   { id: "equipment", label: "Equipment", icon: Package },
   { id: "currently-borrowed", label: "Equipment tracking", icon: ArrowLeftRight },
   { id: "reports", label: "Reports", icon: FileBarChart },
-  { id: "audit-log", label: "Audit log", icon: Activity },
   { id: "feedback", label: "Feedback", icon: MessageSquare },
   { id: "account", label: "Account settings", icon: Settings },
 ];
@@ -58,8 +59,6 @@ const CUSTODIAN_NAV_ITEMS = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "equipment", label: "Equipment", icon: Package },
   { id: "currently-borrowed", label: "Equipment tracking", icon: ArrowLeftRight },
-  { id: "reports", label: "Reports", icon: FileBarChart },
-  { id: "audit-log", label: "Audit log", icon: Activity },
   { id: "requests", label: "Requests", icon: ClipboardList },
   { id: "pending-accounts", label: "Pending accounts", icon: ShieldCheck },
   { id: "feedback", label: "Feedback", icon: MessageSquare },
@@ -140,6 +139,7 @@ function ProfileAvatar({ name, photoUrl, className = "avatar" }) {
       {photoUrl ? <img src={photoUrl} alt={`${name}'s profile`} /> : <UserRound size={18} aria-hidden="true" />}
     </span>
   );
+}
 
 const getErrorMessage = (error) => {
   const message = error?.message || "Something went wrong. Please try again.";
@@ -520,6 +520,9 @@ export default function Home() {
   const [reservations, setReservations] = useState([]);
   const [members, setMembers] = useState([]);
   const [pendingAccounts, setPendingAccounts] = useState([]);
+  const [equipmentAudit, setEquipmentAudit] = useState([]);
+  const [auditPage, setAuditPage] = useState(0);
+  const [auditSearch, setAuditSearch] = useState("");
   const [feedbackThreads, setFeedbackThreads] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [notificationsPage, setNotificationsPage] = useState(0);
@@ -570,6 +573,7 @@ export default function Home() {
       setReservations([]);
       setMembers([]);
       setPendingAccounts([]);
+      setEquipmentAudit([]);
       setFeedbackThreads([]);
       setNotifications([]);
       setUnreadNotificationCount(0);
@@ -613,6 +617,7 @@ export default function Home() {
       setAcceptedAgreementVersion(null);
       setMembers([]);
       setPendingAccounts([]);
+      setEquipmentAudit([]);
       setFeedbackThreads([]);
       setBorrowerId(null);
       setLoading(false);
@@ -675,6 +680,8 @@ export default function Home() {
           .order("created_at", { ascending: false }).order("notification_id", { ascending: false })
           .range(notificationsPage * 20, notificationsPage * 20 + 19);
         const safeSearch = notificationSearch.trim().replace(/[\\%,()"]/g, "\\$&");
+        if (safeSearch) query = query.or(`title.ilike.%${safeSearch}%,message.ilike.%${safeSearch}%`);
+        return query;
       })(),
       client.from("notifications").select("notification_id", { count: "exact", head: true }).eq("is_read", false),
       client.from("borrower_agreement_versions").select("version_id, version_number, title, body_text")
@@ -882,9 +889,24 @@ export default function Home() {
     } else {
       setPendingAccounts([]);
     }
+    if (isEquipmentManager) {
+      let auditQuery = client.from("equipment_audit_log").select("*")
+        .order("changed_at", { ascending: false }).order("id", { ascending: false });
+      if (auditSearch.trim()) auditQuery = auditQuery.ilike("asset_code", `%${auditSearch.trim()}%`);
+      const auditResult = await auditQuery.range(auditPage * 20, auditPage * 20 + 19);
+      if (auditResult.error) errors.push(`Equipment change history could not be loaded: ${auditResult.error.message}`);
+      else setEquipmentAudit((auditResult.data || []).map((entry) => ({
+        ...entry,
+        id: entry.id,
+        equipment_id: entry.equipment_id,
+        asset_tag: entry.asset_code || `Equipment #${entry.equipment_id}`,
+      })));
+    } else {
+      setEquipmentAudit([]);
+    }
     if (errors.length) setError(`${errors.join(" ")} Check that the Supabase schema migrations in supabase/migrations have been applied in order.`);
     setLoading(false);
-  }, [borrowingsPage, borrowingsSearch, category, categoryOptions, equipmentPageCursors, equipmentPageIndex, notificationSearch, notificationsPage, search]);
+  }, [auditPage, auditSearch, borrowingsPage, borrowingsSearch, category, categoryOptions, equipmentPageCursors, equipmentPageIndex, notificationSearch, notificationsPage, search]);
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -908,6 +930,7 @@ export default function Home() {
         setReservations([]);
         setMembers([]);
         setPendingAccounts([]);
+        setEquipmentAudit([]);
         setFeedbackThreads([]);
         setNotifications([]);
         setUnreadNotificationCount(0);
@@ -930,9 +953,9 @@ export default function Home() {
   useEffect(() => {
     if (!profile) return;
     const allowedViews = isAdmin
-      ? ["overview", "equipment", "currently-borrowed", "reports", "audit-log", "feedback", "requests", "pending-accounts", "members", "account"]
+      ? ["overview", "equipment", "currently-borrowed", "reports", "feedback", "requests", "pending-accounts", "members", "account"]
       : isPropertyCustodian
-        ? ["overview", "equipment", "currently-borrowed", "reports", "audit-log", "requests", "pending-accounts", "feedback", "account"]
+        ? ["overview", "equipment", "currently-borrowed", "requests", "pending-accounts", "feedback", "account"]
         : ["equipment", "loans", "feedback", "account"];
     if (!allowedViews.includes(view)) setView(isAdmin || isPropertyCustodian ? "overview" : "equipment");
   }, [profile, isAdmin, isPropertyCustodian, view]);
@@ -1246,6 +1269,64 @@ export default function Home() {
     if (posted) replyForm.reset();
   }
 
+  function downloadReport(reportType) {
+    const today = new Date().toISOString().slice(0, 10);
+    let rows;
+    let suffix;
+    if (reportType === "equipment") {
+      suffix = "equipment-status";
+      rows = [
+        ["Equipment", "Asset tag", "Category", "Status", "Storage location", "Current borrower", "Current location of use", "Expected return"],
+        ...equipment.map((item) => {
+          const activeLoan = borrowings.find((loan) => loan.equipment_id === item.id && ["approved", "released", "overdue", "return_requested"].includes(loan.status));
+          return [item.name, item.asset_tag, item.category, item.status, item.location, activeLoan?.borrower_email || "", activeLoan?.location_of_use || "", activeLoan?.expected_return || ""];
+        }),
+      ];
+    } else {
+      const reportRows = reportType === "overdue"
+        ? borrowings.filter((item) => item.is_overdue || item.status === "overdue")
+        : reportType === "returns"
+          ? borrowings.filter((item) => item.status === "returned")
+          : borrowings;
+      suffix = reportType === "overdue" ? "overdue-items" : reportType === "returns" ? "returns" : "borrowing";
+      rows = [
+        ["Equipment", "Asset tag", "Borrower email", "Purpose", "Location of use", "Start date", "Expected return", "Status"],
+        ...reportRows.map((item) => [
+          item.equipment?.name || "",
+          item.equipment?.asset_tag || "",
+          item.borrower_email || item.borrower_id,
+          item.purpose || "",
+          item.location_of_use || "",
+          item.start_date || "",
+          item.expected_return || "",
+          item.status || "",
+        ]),
+      ];
+    }
+    const csv = rows.map((row) => row.map((value) => {
+      const text = String(value ?? "");
+      let firstVisibleCharacter = 0;
+      while (firstVisibleCharacter < text.length) {
+        const characterCode = text.charCodeAt(firstVisibleCharacter);
+        if (/\s/.test(text[firstVisibleCharacter])
+          || characterCode <= 0x1f
+          || (characterCode >= 0x7f && characterCode <= 0x9f)
+          || characterCode === 0xfeff) {
+          firstVisibleCharacter += 1;
+        } else {
+          break;
+        }
+      }
+      const safeText = /^[=+\-@]/.test(text.slice(firstVisibleCharacter)) ? `'${text}` : text;
+      return `"${safeText.replaceAll('"', '""')}"`;
+    }).join(",")).join("\r\n");
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
+    link.download = `rmmc-${suffix}-report-${today}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
+  }
+
   async function signOut() {
     const { error: signOutError } = await supabase.auth.signOut();
     if (signOutError) setError(getErrorMessage(signOutError));
@@ -1456,6 +1537,7 @@ export default function Home() {
                     <article className="metric-card"><div className="metric-top"><span>Available now</span><span className="metric-icon metric-green"><Package size={18} /></span></div><strong>{loading ? "—" : counts.available}</strong><small>Equipment ready to request</small></article>
                     <article className="metric-card"><div className="metric-top"><span>Inventory records</span><span className="metric-icon metric-amber"><HardDrive size={18} /></span></div><strong>{loading ? "—" : equipment.length}</strong><small>Active equipment items</small></article>
                     <article className="metric-card"><div className="metric-top"><span>Feedback topics</span><span className="metric-icon metric-blue"><MessageSquare size={18} /></span></div><strong>{loading ? "—" : feedbackThreads.length}</strong><small>Community discussions</small></article>
+                    <article className="metric-card"><div className="metric-top"><span>Inventory updates</span><span className="metric-icon metric-rose"><Activity size={18} /></span></div><strong>{loading ? "—" : equipmentAudit.length}</strong><small>Recent recorded changes</small></article>
                   </section>
                   <div className="section-title"><div><h2>Equipment management</h2><p>Review stock and keep the active inventory current.</p></div><button className="text-action" onClick={() => setView("equipment")}>Manage equipment <ArrowUpRight size={15} /></button></div>
                   <div className="section-title"><div><h2>Borrower requests</h2><p>Search borrowing and reservation requests by borrower name.</p></div><button className="text-action" onClick={() => setView("requests")}>Find a borrower <ArrowUpRight size={15} /></button></div>
@@ -1588,11 +1670,22 @@ export default function Home() {
           )}
 
           {view === "reports" && (
-            <ReportsWorkspace supabase={supabase} />
-          )}
-
-          {view === "audit-log" && isEquipmentManager && (
-            <AuditLogWorkspace supabase={supabase} isAdmin={isAdmin} />
+            <>
+              {isAdmin && <div className="report-callout">
+                <div className="report-icon"><FileBarChart size={21} /></div>
+                <div><strong>Download reports</strong><p>Export borrowing, returns, equipment status, or overdue equipment as CSV.</p></div>
+                <div className="report-actions">
+                  <button className="button-secondary" onClick={() => downloadReport("borrowing")}><Download size={14} /> Borrowing</button>
+                  <button className="button-secondary" onClick={() => downloadReport("returns")}><Download size={14} /> Returns</button>
+                  <button className="button-secondary" onClick={() => downloadReport("equipment")}><Download size={14} /> Equipment</button>
+                  <button className="button-secondary" onClick={() => downloadReport("overdue")}><Download size={14} /> Overdue</button>
+                </div>
+              </div>}
+              <div className="section-title"><div><h2>Equipment change history</h2><p>Database-recorded additions, edits, and removals.</p></div><span className="record-count">Page {auditPage + 1} · {equipmentAudit.length} changes</span></div>
+              <label className="search-box audit-search"><Search size={16} /><input value={auditSearch} onChange={(event) => { setAuditSearch(event.target.value); setAuditPage(0); }} placeholder="Search asset code" aria-label="Search audit history by asset code" /></label>
+              <EquipmentAuditLog entries={equipmentAudit} />
+              <nav className="unit-pagination" aria-label="Audit history pages"><span>Page {auditPage + 1}</span><div><button className="button-secondary" type="button" onClick={() => setAuditPage((page) => Math.max(0, page - 1))} disabled={auditPage === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => setAuditPage((page) => page + 1)} disabled={equipmentAudit.length < 20}>Next <ArrowRight size={14} /></button></div></nav>
+            </>
           )}
 
           {view === "feedback" && (
@@ -2387,6 +2480,31 @@ function EquipmentTable({ equipment, onEdit, onDelete }) {
   );
 }
 
+function EquipmentAuditLog({ entries }) {
+  if (!entries.length) return <EmptyState title="No equipment changes recorded" copy="Equipment additions, edits, and removals will be captured here automatically." />;
+  return (
+    <div className="audit-list">
+      {entries.map((entry) => (
+        <article className="audit-entry" key={entry.id}>
+          <span className={`audit-mark audit-${entry.action}`}><Activity size={16} /></span>
+          <div className="audit-entry-main">
+            <strong>{entry.action === "insert" ? "Equipment added" : entry.action === "delete" ? "Equipment removed" : "Equipment updated"}</strong>
+            <p>{entry.asset_tag} · {entry.changed_fields.join(", ")}</p>
+            <small>{new Date(entry.changed_at).toLocaleString()} · User {entry.actor_id || "unknown"}</small>
+            <details>
+              <summary>Show recorded values</summary>
+              <div className="audit-values">
+                {entry.old_values && <div><b>Before</b><pre>{JSON.stringify(entry.old_values, null, 2)}</pre></div>}
+                {entry.new_values && <div><b>After</b><pre>{JSON.stringify(entry.new_values, null, 2)}</pre></div>}
+              </div>
+            </details>
+          </div>
+        </article>
+      ))}
+    </div>
+  );
+}
+
 function AccountSettings({ profile, user, busy, onSave }) {
   return (
     <section className="account-panel">
@@ -2549,11 +2667,7 @@ function MemberTable({ members, currentUserId, runAction, supabase }) {
                 disabled={member.id === currentUserId || member.account_status !== "active"}
                 title={member.account_status === "pending" ? "Approve account access before assigning a role." : undefined}
                 onChange={(event) => runAction(
-                  () => supabase.rpc("admin_update_profile_access", {
-                    p_user_id: member.id,
-                    p_role: event.target.value,
-                    p_account_status: member.account_status,
-                  }),
+                  () => supabase.rpc("set_profile_role", { p_user_id: member.id, p_role: event.target.value }),
                   "Member role updated.",
                 )}
               >
