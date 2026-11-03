@@ -82,7 +82,7 @@ This project is a responsive, installable Progressive Web App (PWA), not a separ
 
 ## First administrator
 
-New accounts receive the `staff` role. After creating and confirming your own account, use the Supabase SQL Editor to promote that account:
+New accounts receive the `staff` role and start pending. Create the first account through the app's signup form, accept the current privacy notice, and confirm the email. The database signup trigger checks the consent flag and version in client-supplied signup metadata and stores an acceptance row with a timestamp; that row records the submitted acceptance but is not proof of identity. Then use the Supabase SQL Editor to promote that account:
 
 ```sql
 update public.profiles
