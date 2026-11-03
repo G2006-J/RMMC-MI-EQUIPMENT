@@ -75,6 +75,7 @@ const ADMIN_ITEMS = [
 ];
 
 const ACTIVE_BORROWING = ["requested", "approved", "released", "overdue", "return_requested"];
+const PRIVACY_NOTICE_VERSION = "2026-11-03-v1";
 
 const dateLabel = (value) =>
   value
@@ -191,6 +192,7 @@ function SignIn({ supabase, configError }) {
   const [department, setDepartment] = useState("");
   const [course, setCourse] = useState("");
   const [gender, setGender] = useState("");
+  const [privacyAccepted, setPrivacyAccepted] = useState(false);
   const [notice, setNotice] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -278,6 +280,7 @@ function SignIn({ supabase, configError }) {
         if (isCodeSent) {
           await handleVerifyOtp();
         } else {
+          if (!privacyAccepted) throw new Error("Read and accept the privacy notice before creating your account.");
           if (password.length < 8) throw new Error("Passwords must contain at least 8 characters.");
           const { data: signupData, error: signUpError } = await supabase.auth.signUp({
             email: email.trim().toLowerCase(),
@@ -287,6 +290,8 @@ function SignIn({ supabase, configError }) {
               department: department.trim(),
               course: course.trim(),
               gender: gender.trim(),
+              privacy_consent: "true",
+              privacy_consent_version: PRIVACY_NOTICE_VERSION,
             } },
           });
           if (signUpError) throw signUpError;
@@ -339,6 +344,7 @@ function SignIn({ supabase, configError }) {
     setIsCodeSent(false);
     setOtpCooldown(0);
     setToken("");
+    setPrivacyAccepted(false);
     setError("");
     setNotice("");
   }
@@ -423,6 +429,10 @@ function SignIn({ supabase, configError }) {
                 <label>
                   <span>Password</span>
                   <input type="password" autoComplete="new-password" minLength={8} maxLength={128} value={password} onChange={(event) => setPassword(event.target.value)} placeholder="Use at least 8 characters" required />
+                </label>
+                <label className="checkbox-label auth-consent-label">
+                  <input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} />
+                  <span>I have read the <Link href="/privacy" target="_blank" rel="noreferrer">privacy notice</Link> and consent to the described use of my information.</span>
                 </label>
               </>
             )}
@@ -567,7 +577,9 @@ export default function Home() {
 
     const profileResult = await client.from("profiles").select("*").eq("id", currentUser.id).maybeSingle();
     if (profileResult.error || !profileResult.data) {
-      setProfile(!profileResult.error && !profileResult.data ? { account_status: "inactive" } : null);
+      const stateResult = profileResult.error ? null : await client.rpc("get_my_account_state");
+      const accountState = stateResult?.data;
+      setProfile(["pending", "inactive"].includes(accountState) ? { account_status: accountState } : null);
       setEquipment([]);
       setCategoryOptions([]);
       setBorrowings([]);
@@ -583,7 +595,15 @@ export default function Home() {
       setActiveAgreement(null);
       setAcceptedAgreementVersion(null);
       setBorrowerId(null);
-      setError(profileResult.error ? `Your profile role could not be loaded: ${profileResult.error.message}` : "");
+      setError(profileResult.error
+        ? `Your profile role could not be loaded: ${profileResult.error.message}`
+        : stateResult?.error
+          ? `Your account state could not be verified: ${stateResult.error.message}`
+          : accountState === "none"
+            ? "No profile was found for the signed-in account."
+            : accountState === "active"
+              ? "Your active profile could not be loaded. Contact an administrator."
+              : "");
       setLoading(false);
       return;
     }
@@ -1026,6 +1046,32 @@ export default function Home() {
       setNotice(successMessage);
       setModal(null);
       await refresh();
+      return true;
+    } catch (actionError) {
+      setError(getErrorMessage(actionError));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function anonymizeMember(userId) {
+    setBusy(true);
+    setError("");
+    setNotice("");
+    try {
+      const { data: photoPath, error: anonymizeError } = await supabase.rpc("admin_anonymize_inactive_borrower", {
+        p_user_id: userId,
+      });
+      if (anonymizeError) throw anonymizeError;
+      await refresh();
+      if (photoPath) {
+        const { error: storageError } = await supabase.storage.from("profile-photos").remove([photoPath]);
+        if (storageError) {
+          throw new Error(`Borrower details were anonymized, but the profile photo could not be deleted: ${storageError.message}`);
+        }
+      }
+      setNotice("Borrower details anonymized.");
       return true;
     } catch (actionError) {
       setError(getErrorMessage(actionError));
@@ -1601,7 +1647,7 @@ export default function Home() {
                 <div className="list-toolbar-copy"><span className="toolbar-icon"><UsersRound size={17} /></span><div><strong>Workspace members</strong><small>Manage access to equipment operations</small></div></div>
                 <span className="record-count">{members.length} accounts</span>
               </div>
-              <MemberTable members={members} currentUserId={user.id} runAction={runAction} supabase={supabase} />
+              <MemberTable members={members} currentUserId={user.id} busy={busy} runAction={runAction} onAnonymize={anonymizeMember} supabase={supabase} />
               <section className="agreement-publisher">
                 <div className="section-title"><div><h2>Borrower agreement</h2><p>Publishing a new version requires borrowers to accept it before their next request.</p></div>
                   {activeAgreement && <span className="record-count">Current version {activeAgreement.version_number}</span>}
@@ -2582,11 +2628,11 @@ function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, bus
   );
 }
 
-function MemberTable({ members, currentUserId, runAction, supabase }) {
+function MemberTable({ members, currentUserId, busy, runAction, onAnonymize, supabase }) {
   if (!members.length) return <EmptyState title="No member accounts yet" copy="Accounts will appear here after users sign up and confirm their email." />;
   return (
     <div className="table-wrap inventory-table">
-      <table><thead><tr><th>Member</th><th>Account status</th><th>Role</th><th>Account created</th></tr></thead>
+      <table><thead><tr><th>Member</th><th>Account status</th><th>Role</th><th>Account created</th><th>Account actions</th></tr></thead>
         <tbody>{members.map((member) => (
           <tr key={member.id}>
             <td><strong>{member.display_name || "Unnamed member"}</strong><small>{member.email || "Email not available"}</small></td>
@@ -2608,6 +2654,16 @@ function MemberTable({ members, currentUserId, runAction, supabase }) {
               </select>
             </td>
             <td>{dateLabel(member.created_at?.slice(0, 10))}</td>
+            <td><div className="table-actions">
+              {member.account_status === "active" && member.id !== currentUserId && <button className="button-danger" type="button" disabled={busy} onClick={() => {
+                if (window.confirm(`Deactivate ${member.display_name || member.email}? Their current sessions will be revoked.`)) {
+                  runAction(() => supabase.rpc("admin_deactivate_borrower_account", { p_user_id: member.id }), "Account deactivated.");
+                }
+              }}>Deactivate</button>}
+              {member.account_status === "inactive" && member.role === "staff" && <button className="button-danger" type="button" disabled={busy} onClick={() => {
+                if (window.confirm(`Anonymize the personal fields for ${member.display_name || member.email}? Borrowing and audit history will remain.`)) onAnonymize(member.id);
+              }}>Anonymize borrower</button>}
+            </div></td>
           </tr>
         ))}</tbody>
       </table>

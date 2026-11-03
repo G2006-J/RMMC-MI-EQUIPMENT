@@ -35,6 +35,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .profile-guard h1 { margin: 0; color: #25352c; font: 800 24px/1.2 "Manrope", sans-serif; }
 .profile-guard p { color: #768078; font-size: 13px; line-height: 1.6; overflow-wrap: anywhere; }
 .profile-guard .loading-panel { justify-content: flex-start; }
+.privacy-notice.profile-guard > div { width: min(680px, 100%); }
+.privacy-notice h2 { margin: 22px 0 7px; color: #26372e; font: 700 15px "Manrope", sans-serif; }
+.privacy-notice .privacy-placeholder { padding: 11px 13px; border-left: 3px solid #a34a3d; color: #843e34; background: #fff3ef; font-weight: 700; }
+.privacy-notice .button-secondary { margin-top: 12px; }
+.auth-consent-label { align-items: flex-start; color: #59665d; font-size: 10px; line-height: 1.5; }
+.auth-consent-label input { flex: none; margin-top: 2px; }
+.auth-consent-label a { color: #41672e; font-weight: 700; }
 
 .auth-page { min-height: 100vh; display: grid; grid-template-columns: minmax(0, .92fr) minmax(0, 1.08fr); background: #f7f8f5; }
 .auth-showcase { position: relative; min-width: 0; min-height: 100vh; overflow: hidden; padding: 44px clamp(28px, 4.2vw, 52px); display: flex; flex-direction: column; color: white; background: var(--green-950); }

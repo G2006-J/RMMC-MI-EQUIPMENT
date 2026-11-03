@@ -41,6 +41,7 @@ migrations=(
   202611030005_notifications_and_borrower_agreement.sql
   202611060001_privacy_consent_deactivation.sql
   202611060002_pending_account_reads_and_anonymization_audit.sql
+  202611060003_my_account_state_and_admin_photo_delete.sql
 )
 
 index=1

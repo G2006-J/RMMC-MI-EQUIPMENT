@@ -19,6 +19,9 @@ begin
     values(v_pending, v_version) on conflict (user_id, version_id) do nothing;
   perform set_config('request.jwt.claim.sub', v_pending::text, true);
   perform set_config('request.jwt.claims', jsonb_build_object('sub', v_pending, 'role', 'authenticated')::text, true);
+  if public.get_my_account_state() <> 'pending' then
+    raise exception 'The account-state RPC must report pending for the caller.';
+  end if;
 end;
 $$;
 set local role authenticated;
@@ -69,6 +72,9 @@ begin
 
   perform set_config('request.jwt.claim.sub', v_user::text, true);
   perform set_config('request.jwt.claims', jsonb_build_object('sub', v_user, 'role', 'authenticated')::text, true);
+  if public.get_my_account_state() <> 'active' then
+    raise exception 'The account-state RPC must report active for the caller.';
+  end if;
   begin
     perform public.admin_anonymize_inactive_borrower(v_user);
     raise exception 'Non-admin unexpectedly anonymized an account.';
@@ -111,6 +117,9 @@ begin
 
   perform set_config('request.jwt.claim.sub', v_user::text, true);
   perform set_config('request.jwt.claims', jsonb_build_object('sub', v_user, 'role', 'authenticated')::text, true);
+  if public.get_my_account_state() <> 'inactive' then
+    raise exception 'The account-state RPC must report inactive after deactivation.';
+  end if;
   if public.is_verified_active_user() then raise exception 'Inactive account passed active-user validation.'; end if;
   begin
     perform public.request_equipment_borrowing(v_equipment, 'Phase 8 test', 'Room 8', now() + interval '1 day', 1);
@@ -150,6 +159,17 @@ begin
 
   perform set_config('request.jwt.claim.sub', v_user::text, true);
   perform set_config('request.jwt.claims', jsonb_build_object('sub', v_user, 'role', 'authenticated')::text, true);
+end;
+$$;
+
+do $$
+declare v_unknown_user uuid := gen_random_uuid();
+begin
+  perform set_config('request.jwt.claim.sub', v_unknown_user::text, true);
+  perform set_config('request.jwt.claims', jsonb_build_object('sub', v_unknown_user, 'role', 'authenticated')::text, true);
+  if public.get_my_account_state() <> 'none' then
+    raise exception 'The account-state RPC must report none when the caller has no profile.';
+  end if;
 end;
 $$;
 
