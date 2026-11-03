@@ -1672,24 +1672,7 @@ export default function Home() {
             </>
           )}
 
-          {view === "reports" && (
-            <>
-              {isAdmin && <div className="report-callout">
-                <div className="report-icon"><FileBarChart size={21} /></div>
-                <div><strong>Download reports</strong><p>Export borrowing, returns, equipment status, or overdue equipment as CSV.</p></div>
-                <div className="report-actions">
-                  <button className="button-secondary" onClick={() => downloadReport("borrowing")}><Download size={14} /> Borrowing</button>
-                  <button className="button-secondary" onClick={() => downloadReport("returns")}><Download size={14} /> Returns</button>
-                  <button className="button-secondary" onClick={() => downloadReport("equipment")}><Download size={14} /> Equipment</button>
-                  <button className="button-secondary" onClick={() => downloadReport("overdue")}><Download size={14} /> Overdue</button>
-                </div>
-              </div>}
-              <div className="section-title"><div><h2>Equipment change history</h2><p>Database-recorded additions, edits, and removals.</p></div><span className="record-count">Page {auditPage + 1} · {equipmentAudit.length} changes</span></div>
-              <label className="search-box audit-search"><Search size={16} /><input value={auditSearch} onChange={(event) => { setAuditSearch(event.target.value); setAuditPage(0); }} placeholder="Search asset code" aria-label="Search audit history by asset code" /></label>
-              <EquipmentAuditLog entries={equipmentAudit} />
-              <nav className="unit-pagination" aria-label="Audit history pages"><span>Page {auditPage + 1}</span><div><button className="button-secondary" type="button" onClick={() => setAuditPage((page) => Math.max(0, page - 1))} disabled={auditPage === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => setAuditPage((page) => page + 1)} disabled={equipmentAudit.length < 20}>Next <ArrowRight size={14} /></button></div></nav>
-            </>
-          )}
+          {view === "reports" && isEquipmentManager && <ReportsWorkspace supabase={supabase} />}
 
           {view === "feedback" && (
             <FeedbackBoard
