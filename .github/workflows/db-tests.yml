@@ -35,12 +35,30 @@ jobs:
       - name: Reset local database
         run: supabase --workdir "$RUNNER_TEMP/rmmc-db-tests" db reset
 
+      - name: Show local Supabase status variable names
+        run: |
+          set -euo pipefail
+          status_output="$(supabase --workdir "$RUNNER_TEMP/rmmc-db-tests" status --output env)" || {
+            echo "Failed to read local Supabase status." >&2
+            exit 1
+          }
+          status_keys="$(printf '%s\n' "$status_output" | awk -F= '{ key = $1; sub(/^[[:space:]]*export[[:space:]]+/, "", key); if (key ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print key }' | sort -u)"
+          printf 'Supabase status environment keys (values omitted):\n%s\n' "$status_keys"
+          if ! grep --fixed-strings --line-regexp 'DB_URL' <<< "$status_keys" >/dev/null; then
+            echo "Missing DB_URL in supabase status --output env." >&2
+            exit 1
+          fi
+
       - name: Create active admin, student, and pending-account fixtures
         env:
           SUPABASE_WORKDIR: ${{ runner.temp }}/rmmc-db-tests
         run: |
           set -euo pipefail
           eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
+          if [[ -z "${DB_URL:-}" ]]; then
+            echo "Missing DB_URL after evaluating supabase status --output env." >&2
+            exit 1
+          fi
 
           missing_consent_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
             --request POST "$API_URL/auth/v1/admin/users" \
@@ -214,8 +232,21 @@ jobs:
             echo "Failed to read local Supabase status." >&2
             exit 1
           }
+          status_keys="$(printf '%s\n' "$status_output" | awk -F= '{ key = $1; sub(/^[[:space:]]*export[[:space:]]+/, "", key); if (key ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print key }')"
+          if ! grep --fixed-strings --line-regexp 'DB_URL' <<< "$status_keys" >/dev/null; then
+            echo "Missing DB_URL in supabase status --output env." >&2
+            exit 1
+          fi
           eval "$status_output"
-          dblink_connection="$(node -e 'const db = new URL(process.env.DB_URL); db.hostname = "127.0.0.1"; db.port = "5432"; process.stdout.write(db.toString());')"
+          if [[ -z "${DB_URL:-}" ]]; then
+            echo "Missing DB_URL after evaluating supabase status --output env." >&2
+            exit 1
+          fi
+          dblink_connection='host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres'
+          if [[ -z "$dblink_connection" ]]; then
+            echo "Missing DBLINK_CONNECTION for the local concurrency database." >&2
+            exit 1
+          fi
 
           shopt -s nullglob
           tests=(supabase/tests/*.sql)
@@ -258,8 +289,25 @@ jobs:
           SUPABASE_WORKDIR: ${{ runner.temp }}/rmmc-db-tests
         run: |
           set -euo pipefail
-          eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
-          dblink_connection="$(node -e 'const db = new URL(process.env.DB_URL); db.hostname = "127.0.0.1"; db.port = "5432"; process.stdout.write(db.toString());')"
+          status_output="$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)" || {
+            echo "Failed to read local Supabase status." >&2
+            exit 1
+          }
+          status_keys="$(printf '%s\n' "$status_output" | awk -F= '{ key = $1; sub(/^[[:space:]]*export[[:space:]]+/, "", key); if (key ~ /^[A-Za-z_][A-Za-z0-9_]*$/) print key }')"
+          if ! grep --fixed-strings --line-regexp 'DB_URL' <<< "$status_keys" >/dev/null; then
+            echo "Missing DB_URL in supabase status --output env." >&2
+            exit 1
+          fi
+          eval "$status_output"
+          if [[ -z "${DB_URL:-}" ]]; then
+            echo "Missing DB_URL after evaluating supabase status --output env." >&2
+            exit 1
+          fi
+          dblink_connection='host=127.0.0.1 port=5432 user=postgres password=postgres dbname=postgres'
+          if [[ -z "$dblink_connection" ]]; then
+            echo "Missing DBLINK_CONNECTION for the local concurrency database." >&2
+            exit 1
+          fi
           psql --set ON_ERROR_STOP=1 \
             --file .github/scripts/remove-approval-equipment-lock.sql "$DB_URL"
 
