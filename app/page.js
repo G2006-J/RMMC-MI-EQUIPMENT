@@ -2,7 +2,9 @@
 
 import {
   Activity,
+  ArrowLeft,
   ArrowLeftRight,
+  ArrowRight,
   ArrowUpRight,
   Bell,
   CalendarDays,
@@ -625,7 +627,7 @@ export default function Home() {
     let borrowingQuery = client.from("borrowings")
       .select("*, borrowers!inner(borrower_id, first_name, middle_name, last_name, email, department), borrowing_items(borrowing_item_id, borrowing_id, equipment_id, item_status, issued_at, returned_at, quantity, released_by, released_at, received_by, condition_at_release, release_photo_path, condition_at_return, return_photo_path, is_overdue, overdue_at, equipment(equipment_id, asset_code, equipment_name, category_id, storage_location, availability_status, tracking_mode, categories(category_name)))")
       .order("created_at", { ascending: false }).order("borrowing_id", { ascending: false }).range(borrowingsPage * 20, borrowingsPage * 20 + 19);
-    const safeBorrowingSearch = borrowingsSearch.trim().replace(/[\\%,()\"]/g, "\\$&");
+    const safeBorrowingSearch = borrowingsSearch.trim().replace(/[\\%,()"]/g, "\\$&");
     if (safeBorrowingSearch) {
       borrowingQuery = borrowingQuery.or(
         `first_name.ilike.${safeBorrowingSearch}%,last_name.ilike.${safeBorrowingSearch}%,email.ilike.${safeBorrowingSearch}%`,
@@ -677,7 +679,7 @@ export default function Home() {
         let query = client.from("notifications").select("*")
           .order("created_at", { ascending: false }).order("notification_id", { ascending: false })
           .range(notificationsPage * 20, notificationsPage * 20 + 19);
-        const safeSearch = notificationSearch.trim().replace(/[\\%,()\"]/g, "\\$&");
+        const safeSearch = notificationSearch.trim().replace(/[\\%,()"]/g, "\\$&");
         if (safeSearch) query = query.or(`title.ilike.%${safeSearch}%,message.ilike.%${safeSearch}%`);
         return query;
       })(),
