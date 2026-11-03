@@ -665,3 +665,36 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
 }
+
+.phase7-workspace { display: grid; gap: 20px; }
+.phase7-report { min-width: 0; padding-top: 20px; border-top: 1px solid var(--line); }
+.phase7-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.phase7-section-heading h2 { margin: 0; color: #27382e; font: 700 15px "Manrope", sans-serif; }
+.phase7-section-heading p { margin: 5px 0 0; color: #7d8781; font-size: 10px; line-height: 1.5; }
+.phase7-export-control { display: grid; justify-items: end; gap: 5px; }
+.phase7-export-control small { max-width: 220px; color: #8a6650; font-size: 9px; text-align: right; }
+.report-date-toolbar, .phase7-audit-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
+.report-date-toolbar label, .phase7-audit-filters > label { min-width: 150px; display: grid; gap: 5px; color: #647168; font-size: 9px; font-weight: 700; }
+.report-date-toolbar input, .phase7-audit-filters input:not(.search-box input) { min-height: 38px; padding: 0 9px; border: 1px solid #dfe4de; border-radius: 7px; color: #314238; background: white; font-size: 10px; }
+.phase7-audit-filters { padding: 12px; border: 1px solid #e5e8e2; border-radius: 9px; background: white; }
+.phase7-audit-filters .phase7-audit-search { min-width: min(250px, 100%); flex: 1; }
+.phase7-audit-filters .search-box { width: 100%; min-height: 38px; flex: 1; }
+.phase7-table-wrap { width: 100%; margin-top: 12px; overflow-x: auto; border: 1px solid #e5e8e2; border-radius: 8px; background: white; }
+.phase7-table { width: 100%; min-width: 650px; border-collapse: collapse; text-align: left; }
+.phase7-table th { padding: 10px 12px; color: #7d8781; background: #f7f8f5; font-size: 9px; font-weight: 700; }
+.phase7-table td { padding: 10px 12px; border-top: 1px solid #edf0ec; color: #39483e; font-size: 10px; overflow-wrap: anywhere; }
+.phase7-table th:first-child, .phase7-table td:first-child { padding-left: 14px; }
+.report-bar-track { width: 120px; height: 7px; display: block; overflow: hidden; border-radius: 4px; background: #e8eee1; }
+.report-bar-track > span { height: 100%; display: block; border-radius: inherit; background: #71944e; }
+.phase7-empty { margin: 0; padding: 22px 10px; color: #7d8781; font-size: 10px; text-align: center; }
+.phase7-pagination { min-height: 40px; display: flex; align-items: center; justify-content: space-between; gap: 12px; color: #7d8781; font-size: 9px; }
+.phase7-pagination > div { display: flex; gap: 5px; }
+.phase7-audit-list { margin-top: 10px; }
+
+@media (max-width: 560px) {
+  .phase7-section-heading { align-items: stretch; flex-direction: column; }
+  .phase7-export-control { justify-items: start; }
+  .phase7-export-control small { text-align: left; }
+  .report-date-toolbar label { min-width: calc(50% - 6px); flex: 1; }
+  .phase7-audit-filters > label { min-width: 100%; }
+}

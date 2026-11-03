@@ -6,8 +6,7 @@ import Papa from "papaparse";
 import { QRCodeSVG } from "qrcode.react";
 import { ArrowLeft, ArrowRight, Check, Download, Printer, Search, Upload, X } from "lucide-react";
 import { createClient } from "@/lib/supabase/client";
-
-const CSV_TEMPLATE = "asset_code,equipment_name,category_name,tracking_mode,quantity,unit_asset_tag,serial_number,unit_status,notes,calibration_due_at\nCAM-001,Canon camera,General,unit,2,CAM-001-A,SERIAL-001,available,,\nCAM-001,Canon camera,General,unit,2,CAM-001-B,SERIAL-002,available,,\n";
+import { downloadCsv } from "@/lib/csv.mjs";
 
 const localTimestamp = () => {
   const date = new Date(Date.now() - new Date().getTimezoneOffset() * 60000);
@@ -303,13 +302,13 @@ export default function EquipmentUnitsPage() {
     }
   }
 
-  function downloadTemplate() {
-    const url = URL.createObjectURL(new Blob([CSV_TEMPLATE], { type: "text/csv;charset=utf-8" }));
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = "equipment-units-template.csv";
-    link.click();
-    URL.revokeObjectURL(url);
+  async function downloadTemplate() {
+    const { data, error: templateError } = await supabase.rpc("get_equipment_csv_template");
+    if (templateError) {
+      setError(templateError.message);
+      return;
+    }
+    downloadCsv("equipment-units-template.csv", [data.headers, ...data.rows]);
   }
 
   function printLabels() {

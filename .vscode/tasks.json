@@ -17,6 +17,18 @@
                     "endsPattern": ".*Ready in .*"
                 }
             }
+        },
+        {
+            "label": "npm: lint",
+            "type": "npm",
+            "script": "lint",
+            "problemMatcher": []
+        },
+        {
+            "label": "npm: build",
+            "type": "npm",
+            "script": "build",
+            "problemMatcher": []
         }
     ]
 }
