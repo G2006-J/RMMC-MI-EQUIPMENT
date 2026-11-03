@@ -39,6 +39,7 @@ migrations=(
   202611030003_borrowing_release_overdue_and_audit.sql
   202611030004_audit_and_integrity_fixes.sql
   202611030005_notifications_and_borrower_agreement.sql
+  202611060001_privacy_consent_deactivation.sql
 )
 
 index=1

@@ -41,19 +41,37 @@ jobs:
           set -euo pipefail
           eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
 
+          missing_consent_status="$(curl --silent --output /dev/null --write-out '%{http_code}' \
+            --request POST "$API_URL/auth/v1/admin/users" \
+            --header "apikey: $SERVICE_ROLE_KEY" \
+            --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"email":"ci-no-consent@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"No Consent"}}')"
+          if [[ "$missing_consent_status" -lt 400 ]]; then
+            echo "Signup unexpectedly succeeded without privacy consent metadata." >&2
+            exit 1
+          fi
+
           curl --fail --silent --show-error \
             --request POST "$API_URL/auth/v1/admin/users" \
             --header "apikey: $SERVICE_ROLE_KEY" \
             --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
             --header "Content-Type: application/json" \
-            --data '{"email":"ci-admin@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Admin"}}' \
+            --data '{"email":"ci-admin@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Admin","privacy_consent":"true","privacy_consent_version":"2026-11-03-v1"}}' \
             >/dev/null
           curl --fail --silent --show-error \
             --request POST "$API_URL/auth/v1/admin/users" \
             --header "apikey: $SERVICE_ROLE_KEY" \
             --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
             --header "Content-Type: application/json" \
-            --data '{"email":"ci-student@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Student","course":"CI"}}' \
+            --data '{"email":"ci-student@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Student","course":"CI","privacy_consent":"true","privacy_consent_version":"2026-11-03-v1"}}' \
+            >/dev/null
+          curl --fail --silent --show-error \
+            --request POST "$API_URL/auth/v1/admin/users" \
+            --header "apikey: $SERVICE_ROLE_KEY" \
+            --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"email":"ci-phase8@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Phase Eight","privacy_consent":"true","privacy_consent_version":"2026-11-03-v1"}}' \
             >/dev/null
 
           psql --set ON_ERROR_STOP=1 "$DB_URL" <<'SQL'
@@ -69,6 +87,15 @@ jobs:
           set status = 'active'
           where email = 'ci-student@example.com'
             and user_id = (select id from auth.users where email = 'ci-student@example.com');
+
+          update public.profiles
+          set role = 'staff', account_status = 'active'
+          where email = 'ci-phase8@example.com';
+
+          update public.borrowers
+          set status = 'active'
+          where email = 'ci-phase8@example.com'
+            and user_id = (select id from auth.users where email = 'ci-phase8@example.com');
 
           insert into public.borrower_agreement_acceptances (user_id, version_id)
           select u.id, v.version_id
@@ -108,11 +135,18 @@ jobs:
           SQL
 
           curl --fail --silent --show-error \
+            --request POST "$API_URL/auth/v1/token?grant_type=password" \
+            --header "apikey: $ANON_KEY" \
+            --header "Content-Type: application/json" \
+            --data '{"email":"ci-phase8@example.com","password":"ci-only-password-123!"}' \
+            >/dev/null
+
+          curl --fail --silent --show-error \
             --request POST "$API_URL/auth/v1/admin/users" \
             --header "apikey: $SERVICE_ROLE_KEY" \
             --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
             --header "Content-Type: application/json" \
-            --data '{"email":"ci-pending@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Pending","course":"CI"}}' \
+            --data '{"email":"ci-pending@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Pending","course":"CI","privacy_consent":"true","privacy_consent_version":"2026-11-03-v1"}}' \
             >/dev/null
 
       - name: Run every SQL test
