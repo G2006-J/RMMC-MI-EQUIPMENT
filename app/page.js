@@ -38,6 +38,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient as createAuthClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
 import InstallAppButton from "./install-app-button";
+import { AuditLogWorkspace, ReportsWorkspace } from "./phase7-workspaces";
 
 const MEMBER_NAV_ITEMS = [
   { id: "equipment", label: "Equipment", icon: Package },
@@ -51,6 +52,7 @@ const ADMIN_NAV_ITEMS = [
   { id: "equipment", label: "Equipment", icon: Package },
   { id: "currently-borrowed", label: "Equipment tracking", icon: ArrowLeftRight },
   { id: "reports", label: "Reports", icon: FileBarChart },
+  { id: "audit-log", label: "Audit log", icon: Activity },
   { id: "feedback", label: "Feedback", icon: MessageSquare },
   { id: "account", label: "Account settings", icon: Settings },
 ];
@@ -59,6 +61,7 @@ const CUSTODIAN_NAV_ITEMS = [
   { id: "overview", label: "Overview", icon: Activity },
   { id: "equipment", label: "Equipment", icon: Package },
   { id: "currently-borrowed", label: "Equipment tracking", icon: ArrowLeftRight },
+  { id: "reports", label: "Reports", icon: FileBarChart },
   { id: "requests", label: "Requests", icon: ClipboardList },
   { id: "pending-accounts", label: "Pending accounts", icon: ShieldCheck },
   { id: "feedback", label: "Feedback", icon: MessageSquare },
@@ -953,9 +956,9 @@ export default function Home() {
   useEffect(() => {
     if (!profile) return;
     const allowedViews = isAdmin
-      ? ["overview", "equipment", "currently-borrowed", "reports", "feedback", "requests", "pending-accounts", "members", "account"]
+      ? ["overview", "equipment", "currently-borrowed", "reports", "audit-log", "feedback", "requests", "pending-accounts", "members", "account"]
       : isPropertyCustodian
-        ? ["overview", "equipment", "currently-borrowed", "requests", "pending-accounts", "feedback", "account"]
+        ? ["overview", "equipment", "currently-borrowed", "reports", "requests", "pending-accounts", "feedback", "account"]
         : ["equipment", "loans", "feedback", "account"];
     if (!allowedViews.includes(view)) setView(isAdmin || isPropertyCustodian ? "overview" : "equipment");
   }, [profile, isAdmin, isPropertyCustodian, view]);
