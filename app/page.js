@@ -1055,22 +1055,18 @@ export default function Home() {
     }
   }
 
-  async function anonymizeMember(userId) {
+  async function anonymizeMember(member) {
     setBusy(true);
     setError("");
     setNotice("");
     try {
-      const { data: photoPath, error: anonymizeError } = await supabase.rpc("admin_anonymize_inactive_borrower", {
-        p_user_id: userId,
-      });
+      if (member.profile_photo_path) {
+        const { error: storageError } = await supabase.storage.from("profile-photos").remove([member.profile_photo_path]);
+        if (storageError) throw new Error(`The profile photo could not be deleted; borrower details were not changed. ${storageError.message}`);
+      }
+      const { error: anonymizeError } = await supabase.rpc("admin_anonymize_inactive_borrower", { p_user_id: member.id });
       if (anonymizeError) throw anonymizeError;
       await refresh();
-      if (photoPath) {
-        const { error: storageError } = await supabase.storage.from("profile-photos").remove([photoPath]);
-        if (storageError) {
-          throw new Error(`Borrower details were anonymized, but the profile photo could not be deleted: ${storageError.message}`);
-        }
-      }
       setNotice("Borrower details anonymized.");
       return true;
     } catch (actionError) {
@@ -2630,6 +2626,7 @@ function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, bus
 
 function MemberTable({ members, currentUserId, busy, runAction, onAnonymize, supabase }) {
   if (!members.length) return <EmptyState title="No member accounts yet" copy="Accounts will appear here after users sign up and confirm their email." />;
+  const activeAdminCount = members.filter((member) => member.role === "admin" && member.account_status === "active").length;
   return (
     <div className="table-wrap inventory-table">
       <table><thead><tr><th>Member</th><th>Account status</th><th>Role</th><th>Account created</th><th>Account actions</th></tr></thead>
@@ -2655,13 +2652,13 @@ function MemberTable({ members, currentUserId, busy, runAction, onAnonymize, sup
             </td>
             <td>{dateLabel(member.created_at?.slice(0, 10))}</td>
             <td><div className="table-actions">
-              {member.account_status === "active" && member.id !== currentUserId && <button className="button-danger" type="button" disabled={busy} onClick={() => {
+              {member.account_status === "active" && member.id !== currentUserId && <button className="button-danger" type="button" disabled={busy || (member.role === "admin" && activeAdminCount <= 1)} title={member.role === "admin" && activeAdminCount <= 1 ? "The last active administrator cannot be deactivated." : undefined} onClick={() => {
                 if (window.confirm(`Deactivate ${member.display_name || member.email}? Their current sessions will be revoked.`)) {
                   runAction(() => supabase.rpc("admin_deactivate_borrower_account", { p_user_id: member.id }), "Account deactivated.");
                 }
               }}>Deactivate</button>}
               {member.account_status === "inactive" && member.role === "staff" && <button className="button-danger" type="button" disabled={busy} onClick={() => {
-                if (window.confirm(`Anonymize the personal fields for ${member.display_name || member.email}? Borrowing and audit history will remain.`)) onAnonymize(member.id);
+                if (window.prompt(`This permanently anonymizes ${member.display_name || member.email}. Type ANONYMIZE to continue.`) === "ANONYMIZE") onAnonymize(member);
               }}>Anonymize borrower</button>}
             </div></td>
           </tr>

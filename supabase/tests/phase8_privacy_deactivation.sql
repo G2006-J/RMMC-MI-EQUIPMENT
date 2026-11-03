@@ -86,6 +86,23 @@ begin
   perform set_config('request.jwt.claim.sub', v_admin::text, true);
   perform set_config('request.jwt.claims', jsonb_build_object('sub', v_admin, 'role', 'authenticated')::text, true);
   begin
+    perform public.admin_deactivate_borrower_account(v_admin);
+    raise exception 'The sole active administrator unexpectedly deactivated their own account.';
+  exception when raise_exception then
+    if sqlerrm = 'The sole active administrator unexpectedly deactivated their own account.' then raise; end if;
+    if sqlerrm not like '%cannot deactivate their own account%' then raise; end if;
+  end;
+  if (select count(*) from public.profiles where role = 'admin' and account_status = 'active') <> 1 then
+    raise exception 'The active administrator count changed after a self-deactivation attempt.';
+  end if;
+  begin
+    perform public.admin_anonymize_inactive_borrower(v_admin);
+    raise exception 'An administrator unexpectedly anonymized their own account.';
+  exception when raise_exception then
+    if sqlerrm = 'An administrator unexpectedly anonymized their own account.' then raise; end if;
+    if sqlerrm not like '%cannot anonymize their own account%' then raise; end if;
+  end;
+  begin
     perform public.admin_anonymize_inactive_borrower(v_user);
     raise exception 'Active account was unexpectedly anonymized.';
   exception when raise_exception then
