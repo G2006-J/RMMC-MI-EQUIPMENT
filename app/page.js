@@ -1272,64 +1272,6 @@ export default function Home() {
     if (posted) replyForm.reset();
   }
 
-  function downloadReport(reportType) {
-    const today = new Date().toISOString().slice(0, 10);
-    let rows;
-    let suffix;
-    if (reportType === "equipment") {
-      suffix = "equipment-status";
-      rows = [
-        ["Equipment", "Asset tag", "Category", "Status", "Storage location", "Current borrower", "Current location of use", "Expected return"],
-        ...equipment.map((item) => {
-          const activeLoan = borrowings.find((loan) => loan.equipment_id === item.id && ["approved", "released", "overdue", "return_requested"].includes(loan.status));
-          return [item.name, item.asset_tag, item.category, item.status, item.location, activeLoan?.borrower_email || "", activeLoan?.location_of_use || "", activeLoan?.expected_return || ""];
-        }),
-      ];
-    } else {
-      const reportRows = reportType === "overdue"
-        ? borrowings.filter((item) => item.is_overdue || item.status === "overdue")
-        : reportType === "returns"
-          ? borrowings.filter((item) => item.status === "returned")
-          : borrowings;
-      suffix = reportType === "overdue" ? "overdue-items" : reportType === "returns" ? "returns" : "borrowing";
-      rows = [
-        ["Equipment", "Asset tag", "Borrower email", "Purpose", "Location of use", "Start date", "Expected return", "Status"],
-        ...reportRows.map((item) => [
-          item.equipment?.name || "",
-          item.equipment?.asset_tag || "",
-          item.borrower_email || item.borrower_id,
-          item.purpose || "",
-          item.location_of_use || "",
-          item.start_date || "",
-          item.expected_return || "",
-          item.status || "",
-        ]),
-      ];
-    }
-    const csv = rows.map((row) => row.map((value) => {
-      const text = String(value ?? "");
-      let firstVisibleCharacter = 0;
-      while (firstVisibleCharacter < text.length) {
-        const characterCode = text.charCodeAt(firstVisibleCharacter);
-        if (/\s/.test(text[firstVisibleCharacter])
-          || characterCode <= 0x1f
-          || (characterCode >= 0x7f && characterCode <= 0x9f)
-          || characterCode === 0xfeff) {
-          firstVisibleCharacter += 1;
-        } else {
-          break;
-        }
-      }
-      const safeText = /^[=+\-@]/.test(text.slice(firstVisibleCharacter)) ? `'${text}` : text;
-      return `"${safeText.replaceAll('"', '""')}"`;
-    }).join(",")).join("\r\n");
-    const link = document.createElement("a");
-    link.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8" }));
-    link.download = `rmmc-${suffix}-report-${today}.csv`;
-    link.click();
-    URL.revokeObjectURL(link.href);
-  }
-
   async function signOut() {
     const { error: signOutError } = await supabase.auth.signOut();
     if (signOutError) setError(getErrorMessage(signOutError));

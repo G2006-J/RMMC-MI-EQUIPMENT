@@ -6,7 +6,8 @@
     "dev": "next dev -p 5501",
     "build": "next build",
     "start": "next start -p 5501",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "node --test"
   },
   "dependencies": {
     "@supabase/ssr": "^0.6.1",
