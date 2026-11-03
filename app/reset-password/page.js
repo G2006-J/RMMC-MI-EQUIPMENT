@@ -20,8 +20,8 @@ export default function ResetPasswordPage() {
     try {
       client = createClient();
       setSupabase(client);
-    } catch (clientError) {
-      setError(clientError.message);
+    } catch {
+      setError("The password reset link could not be verified. Request a new reset link and try again.");
       setStatus("invalid");
       return () => { active = false; };
     }
@@ -30,17 +30,17 @@ export default function ResetPasswordPage() {
       if (active && event === "PASSWORD_RECOVERY") setStatus("ready");
     });
 
-    client.auth.getSession().then(({ data, error: sessionError }) => {
+    client.auth.getUser().then(({ data, error: userError }) => {
       if (!active) return;
-      if (sessionError) {
-        setError(sessionError.message);
+      if (userError || !data.user) {
+        setError("The password reset link could not be verified. Request a new reset link and try again.");
         setStatus("invalid");
       } else {
-        setStatus(data.session ? "ready" : "invalid");
+        setStatus("ready");
       }
-    }).catch((sessionError) => {
+    }).catch(() => {
       if (!active) return;
-      setError(sessionError.message || "The password reset link could not be verified.");
+      setError("The password reset link could not be verified. Request a new reset link and try again.");
       setStatus("invalid");
     });
 
@@ -65,7 +65,7 @@ export default function ResetPasswordPage() {
       await supabase.auth.signOut({ scope: "local" });
       setStatus("success");
     } catch (updateError) {
-      setError(updateError.message || "Your password could not be updated. Request a new reset link and try again.");
+      setError("Your password could not be updated. Request a new reset link and try again.");
     } finally {
       setBusy(false);
     }

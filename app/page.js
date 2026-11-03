@@ -567,7 +567,7 @@ export default function Home() {
 
     const profileResult = await client.from("profiles").select("*").eq("id", currentUser.id).maybeSingle();
     if (profileResult.error || !profileResult.data) {
-      setProfile(null);
+      setProfile(!profileResult.error && !profileResult.data ? { account_status: "inactive" } : null);
       setEquipment([]);
       setCategoryOptions([]);
       setBorrowings([]);
@@ -583,9 +583,7 @@ export default function Home() {
       setActiveAgreement(null);
       setAcceptedAgreementVersion(null);
       setBorrowerId(null);
-      setError(profileResult.error
-        ? `Your profile role could not be loaded: ${profileResult.error.message}`
-        : "No profile was found for the signed-in account.");
+      setError(profileResult.error ? `Your profile role could not be loaded: ${profileResult.error.message}` : "");
       setLoading(false);
       return;
     }
@@ -1301,14 +1299,17 @@ export default function Home() {
   }
   if (profile.account_status !== "active") {
     const isPending = profile.account_status === "pending";
+    const isDeactivated = profile.account_status === "inactive";
     return (
       <main className="profile-guard" role="status">
         <div>
           <span className="brand-mark"><ShieldCheck size={21} /></span>
-          <h1>{isPending ? "Account pending approval" : "Workspace access unavailable"}</h1>
+          <h1>{isPending ? "Account pending approval" : isDeactivated ? "This account has been deactivated" : "Workspace access unavailable"}</h1>
           <p>{isPending
             ? "Your account is awaiting approval from an administrator or property custodian. You cannot submit borrowing or reservation requests until it is approved."
-            : "This account is not active. Contact an administrator or property custodian if you believe this is a mistake."}</p>
+            : isDeactivated
+              ? "Contact an administrator if you believe this is a mistake."
+              : "This account is not active. Contact an administrator or property custodian if you believe this is a mistake."}</p>
           {error && <p className="feedback feedback-error" role="alert">{error}</p>}
           {notifications.length > 0 && <section className="guard-notifications" aria-label="Account notifications">
             <div className="notification-panel-heading">
