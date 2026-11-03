@@ -53,6 +53,10 @@ Password-based signup uses Supabase `signUp` and verifies the account with `veri
 
 4. Save the template. The signup screen will prompt for this code before activating the account.
 
+### Configure password reset links
+
+Password reset emails return to `/reset-password`, where the user can set a new password. In **Authentication → URL Configuration**, add `http://localhost:5501/reset-password` and your deployed site's `https://your-domain/reset-password` URL to the redirect URL allowlist. In **Authentication → Email Templates → Reset Password**, make sure the reset link uses `{{ .ConfirmationURL }}` so Supabase can verify the recovery request before returning to the app.
+
 ### Security settings and role access
 
 - Apply the security-hardening, borrower-search, and follow-up migrations below to the same Supabase project used by `.env.local`. Database row-level security and security-definer functions enforce access independently of the visible dashboard. `admin` accounts retain full operations access. `property_custodian` accounts can manage equipment and feedback, search and approve/decline borrower and reservation requests, and edit their own account settings. Reports and member roles remain administrator-only.
@@ -121,9 +125,11 @@ Only the `admin` role can add, edit, or remove equipment. Equipment changes are 
 
 - After reviewing the SQL, apply [`supabase/migrations/202611030005_notifications_and_borrower_agreement.sql`](./supabase/migrations/202611030005_notifications_and_borrower_agreement.sql) after migration 004. It builds on `public.notifications`, schedules daily notification/retention maintenance, and adds versioned borrower agreement acceptance. Replace the starter agreement with school-approved text by publishing a new version from the administrator's Members & roles page.
 - Run [`supabase/tests/notifications_and_borrower_agreement.sql`](./supabase/tests/notifications_and_borrower_agreement.sql) through the database test workflow after applying the migration.
+- After reviewing the Phase 6 SQL preview, apply [`supabase/migrations/202611040001_equipment_units.sql`](./supabase/migrations/202611040001_equipment_units.sql) after migration 005, then run [`supabase/tests/phase6_equipment_units.sql`](./supabase/tests/phase6_equipment_units.sql). Existing equipment remains quantity-tracked until a manager supplies matching asset tags through Equipment units → Convert existing equipment. Unit IDs are manager-only; borrowers see only the asset tags assigned to their released equipment.
 - The publishable Supabase key is intended for browser use. Never put a Supabase service-role key in `.env.local` or client code.
 - Borrowing and reservation requests require an active borrower row linked to the signed-in account by `user_id`.
 - If Supabase reports missing tables or functions, ensure the migration ran successfully in the project that matches `.env.local`.
 - To create a production build, run `npm run build`, then `npm start`.
-#   R M M C - M I - E q u i p m e n t - B o r r o w i n g - S y s t e m  
+#   R M M C - M I - E q u i p m e n t - B o r r o w i n g - S y s t e m 
+ 
  

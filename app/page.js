@@ -6,6 +6,7 @@ import {
   ArrowUpRight,
   Bell,
   CalendarDays,
+  Camera,
   Check,
   CheckCircle2,
   ClipboardList,
@@ -294,7 +295,7 @@ function SignIn({ supabase, configError }) {
         }
       } else if (mode === "reset") {
         const { error: resetError } = await supabase.auth.resetPasswordForEmail(email.trim().toLowerCase(), {
-          redirectTo: window.location.origin,
+          redirectTo: `${window.location.origin}/reset-password`,
         });
         if (resetError) throw resetError;
         setNotice("If an account exists for that address, a password reset link is on its way.");
@@ -507,15 +508,25 @@ export default function Home() {
   const [user, setUser] = useState(null);
   const [profile, setProfile] = useState(null);
   const [equipment, setEquipment] = useState([]);
+  const [equipmentTotalCount, setEquipmentTotalCount] = useState(0);
+  const [equipmentPageCursors, setEquipmentPageCursors] = useState([null]);
+  const [equipmentPageIndex, setEquipmentPageIndex] = useState(0);
   const [categoryOptions, setCategoryOptions] = useState([]);
   const [borrowings, setBorrowings] = useState([]);
   const [currentlyBorrowed, setCurrentlyBorrowed] = useState([]);
+  const [currentUnitTags, setCurrentUnitTags] = useState([]);
   const [reservations, setReservations] = useState([]);
   const [members, setMembers] = useState([]);
   const [pendingAccounts, setPendingAccounts] = useState([]);
   const [equipmentAudit, setEquipmentAudit] = useState([]);
+  const [auditPage, setAuditPage] = useState(0);
+  const [auditSearch, setAuditSearch] = useState("");
   const [feedbackThreads, setFeedbackThreads] = useState([]);
   const [notifications, setNotifications] = useState([]);
+  const [notificationsPage, setNotificationsPage] = useState(0);
+  const [notificationSearch, setNotificationSearch] = useState("");
+  const [borrowingsPage, setBorrowingsPage] = useState(0);
+  const [borrowingsSearch, setBorrowingsSearch] = useState("");
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [activeAgreement, setActiveAgreement] = useState(null);
@@ -556,6 +567,7 @@ export default function Home() {
       setCategoryOptions([]);
       setBorrowings([]);
       setCurrentlyBorrowed([]);
+      setCurrentUnitTags([]);
       setReservations([]);
       setMembers([]);
       setPendingAccounts([]);
@@ -585,7 +597,7 @@ export default function Home() {
 
     if (currentProfile.account_status !== "active") {
       const [inactiveNotificationsResult, inactiveUnreadResult] = await Promise.all([
-        client.from("notifications").select("*").order("created_at", { ascending: false }).limit(50),
+        client.from("notifications").select("*").order("created_at", { ascending: false }).order("notification_id", { ascending: false }).range(notificationsPage * 20, notificationsPage * 20 + 19),
         client.from("notifications").select("notification_id", { count: "exact", head: true }).eq("is_read", false),
       ]);
       if (inactiveNotificationsResult.error || inactiveUnreadResult.error) {
@@ -610,9 +622,16 @@ export default function Home() {
       return;
     }
 
-    const borrowingQuery = client.from("borrowings")
-      .select("*, borrowers(borrower_id, first_name, middle_name, last_name, email, department), borrowing_items(*, equipment(equipment_id, asset_code, equipment_name, category_id, storage_location, availability_status, categories(category_name)))")
-      .order("created_at", { ascending: false });
+    let borrowingQuery = client.from("borrowings")
+      .select("*, borrowers!inner(borrower_id, first_name, middle_name, last_name, email, department), borrowing_items(borrowing_item_id, borrowing_id, equipment_id, item_status, issued_at, returned_at, quantity, released_by, released_at, received_by, condition_at_release, release_photo_path, condition_at_return, return_photo_path, is_overdue, overdue_at, equipment(equipment_id, asset_code, equipment_name, category_id, storage_location, availability_status, tracking_mode, categories(category_name)))")
+      .order("created_at", { ascending: false }).order("borrowing_id", { ascending: false }).range(borrowingsPage * 20, borrowingsPage * 20 + 19);
+    const safeBorrowingSearch = borrowingsSearch.trim().replace(/[\\%,()\"]/g, "\\$&");
+    if (safeBorrowingSearch) {
+      borrowingQuery = borrowingQuery.or(
+        `first_name.ilike.${safeBorrowingSearch}%,last_name.ilike.${safeBorrowingSearch}%,email.ilike.${safeBorrowingSearch}%`,
+        { foreignTable: "borrowers" },
+      );
+    }
     const scopedBorrowingQuery = isCustodianUser
       ? borrowingQuery.in("transaction_status", ["requested", "approved", "released"])
       : borrowingQuery;
@@ -627,21 +646,25 @@ export default function Home() {
       equipmentResult,
       categoryResult,
       borrowingResult,
-      availableQuantitiesResult,
       borrowerResult,
       reservationResult,
       feedbackResult,
       repliesResult,
       currentlyBorrowedResult,
+      unitTagsResult,
       notificationsResult,
       unreadNotificationsResult,
       activeAgreementResult,
       agreementAcceptancesResult,
     ] = await Promise.all([
-      client.from("equipment").select("*, categories(category_name)").is("deleted_at", null).order("equipment_name"),
+      client.rpc("search_equipment_page", {
+        p_search: search.trim() || null,
+        p_category_id: category === "All equipment" ? null : categoryOptions.find((option) => option.category_name === category)?.category_id || null,
+        p_after_name: equipmentPageCursors[equipmentPageIndex]?.equipment_name || null,
+        p_after_id: equipmentPageCursors[equipmentPageIndex]?.equipment_id || null,
+      }),
       client.from("categories").select("category_id, category_name").order("category_name"),
       scopedBorrowingQuery,
-      client.rpc("equipment_available_quantities"),
       isCustodianUser ? Promise.resolve({ data: null, error: null }) : client.rpc("current_borrower_id"),
       scopedReservationQuery,
       client.from("feedback_threads").select("*").order("updated_at", { ascending: false }),
@@ -649,7 +672,15 @@ export default function Home() {
       isEquipmentManager
         ? client.rpc("list_equipment_tracking_records")
         : Promise.resolve({ data: [], error: null }),
-      client.from("notifications").select("*").order("created_at", { ascending: false }).limit(50),
+      isEquipmentManager ? Promise.resolve({ data: [], error: null }) : client.rpc("my_current_unit_tags"),
+      (() => {
+        let query = client.from("notifications").select("*")
+          .order("created_at", { ascending: false }).order("notification_id", { ascending: false })
+          .range(notificationsPage * 20, notificationsPage * 20 + 19);
+        const safeSearch = notificationSearch.trim().replace(/[\\%,()\"]/g, "\\$&");
+        if (safeSearch) query = query.or(`title.ilike.%${safeSearch}%,message.ilike.%${safeSearch}%`);
+        return query;
+      })(),
       client.from("notifications").select("notification_id", { count: "exact", head: true }).eq("is_read", false),
       client.from("borrower_agreement_versions").select("version_id, version_number, title, body_text")
         .eq("active", true).lte("published_at", new Date().toISOString()).order("version_number", { ascending: false }).limit(1).maybeSingle(),
@@ -693,6 +724,8 @@ export default function Home() {
     const trackingRows = isEquipmentManager && !currentlyBorrowedResult.error
       ? currentlyBorrowedResult.data || []
       : [];
+    if (unitTagsResult.error) errors.push(`Assigned unit tags could not be loaded: ${unitTagsResult.error.message}`);
+    setCurrentUnitTags(unitTagsResult.data || []);
     const photoPaths = [...new Set([
       currentProfile.profile_photo_path,
       ...trackingRows.map((item) => item.profile_photo_path),
@@ -719,29 +752,27 @@ export default function Home() {
     if (equipmentResult.error) {
       errors.push(`Equipment could not be loaded: ${equipmentResult.error.message}`);
     } else {
-      if (availableQuantitiesResult.error) {
-        errors.push(`Available equipment amounts could not be loaded: ${availableQuantitiesResult.error.message}`);
-      }
-      const availableQuantities = new Map(
-        (availableQuantitiesResult.data || []).map((item) => [item.equipment_id, item.available_quantity]),
-      );
+      setEquipmentTotalCount(equipmentResult.data?.[0]?.total_count || 0);
       setEquipment((equipmentResult.data || []).map((item) => ({
         ...item,
         id: item.equipment_id,
         name: item.equipment_name,
         asset_tag: item.asset_code,
-        category: item.categories?.category_name || "General",
+        category: item.category_name || "General",
         location: item.storage_location || "",
         status: item.availability_status === "borrowed" ? "checked_out" : item.availability_status,
         image_url: item.image_url || null,
         quantity: item.quantity ?? 1,
-        available_quantity: availableQuantitiesResult.error
-          ? null
-          : availableQuantities.get(item.equipment_id) ?? null,
+        available_quantity: item.available_quantity ?? null,
       })));
     }
     if (categoryResult.error) errors.push(`Equipment categories could not be loaded: ${categoryResult.error.message}`);
-    else setCategoryOptions(categoryResult.data || []);
+    else setCategoryOptions((current) => {
+      const next = categoryResult.data || [];
+      return current.length === next.length && current.every((item, index) => item.category_id === next[index]?.category_id)
+        ? current
+        : next;
+    });
     if (!isCustodianUser && borrowerResult.error) {
       setBorrowerId(null);
       errors.push(`Your borrower record could not be found: ${borrowerResult.error.message}`);
@@ -789,6 +820,14 @@ export default function Home() {
           } : null,
           equipment_items: (item.borrowing_items || []).map((borrowingItem) => borrowingItem.equipment?.equipment_name).filter(Boolean),
           quantity: (item.borrowing_items || []).reduce((total, borrowingItem) => total + Number(borrowingItem.quantity || 1), 0),
+          unit_items: (item.borrowing_items || [])
+            .filter((borrowingItem) => borrowingItem.equipment?.tracking_mode === "unit")
+            .map((borrowingItem) => ({
+              borrowing_item_id: borrowingItem.borrowing_item_id,
+              equipment_id: borrowingItem.equipment_id,
+              item_status: borrowingItem.item_status,
+              quantity: borrowingItem.quantity,
+            })),
         };
       }));
     }
@@ -849,7 +888,10 @@ export default function Home() {
       setPendingAccounts([]);
     }
     if (isEquipmentManager) {
-      const auditResult = await client.from("equipment_audit_log").select("*").order("changed_at", { ascending: false }).limit(30);
+      let auditQuery = client.from("equipment_audit_log").select("*")
+        .order("changed_at", { ascending: false }).order("id", { ascending: false });
+      if (auditSearch.trim()) auditQuery = auditQuery.ilike("asset_code", `%${auditSearch.trim()}%`);
+      const auditResult = await auditQuery.range(auditPage * 20, auditPage * 20 + 19);
       if (auditResult.error) errors.push(`Equipment change history could not be loaded: ${auditResult.error.message}`);
       else setEquipmentAudit((auditResult.data || []).map((entry) => ({
         ...entry,
@@ -862,7 +904,7 @@ export default function Home() {
     }
     if (errors.length) setError(`${errors.join(" ")} Check that the Supabase schema migrations in supabase/migrations have been applied in order.`);
     setLoading(false);
-  }, []);
+  }, [auditPage, auditSearch, borrowingsPage, borrowingsSearch, category, categoryOptions, equipmentPageCursors, equipmentPageIndex, notificationSearch, notificationsPage, search]);
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -929,8 +971,8 @@ export default function Home() {
   }, []);
 
   const categories = useMemo(
-    () => ["All equipment", ...new Set(equipment.map((item) => item.category).filter(Boolean))],
-    [equipment],
+    () => ["All equipment", ...categoryOptions.map((item) => item.category_name)],
+    [categoryOptions],
   );
   const filteredEquipment = useMemo(() => {
     const query = search.trim().toLowerCase();
@@ -940,6 +982,21 @@ export default function Home() {
       return matchesCategory && matchesQuery;
     });
   }, [equipment, category, search]);
+
+  function resetEquipmentPagination() {
+    setEquipmentPageCursors([null]);
+    setEquipmentPageIndex(0);
+  }
+
+  function nextEquipmentPage() {
+    if (equipment.length < 20) return;
+    const lastItem = equipment[equipment.length - 1];
+    setEquipmentPageCursors((cursors) => [...cursors.slice(0, equipmentPageIndex + 1), {
+      equipment_id: lastItem.equipment_id,
+      equipment_name: lastItem.equipment_name,
+    }]);
+    setEquipmentPageIndex((index) => index + 1);
+  }
 
   const counts = useMemo(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -1413,6 +1470,7 @@ export default function Home() {
                     <div><strong>Notifications</strong><small>{unreadNotificationCount} unread</small></div>
                     <button type="button" onClick={markAllNotificationsRead} disabled={!unreadNotificationCount || busy}>Mark all read</button>
                   </div>
+                  <label className="notification-search"><Search size={14} /><input value={notificationSearch} onChange={(event) => { setNotificationSearch(event.target.value); setNotificationsPage(0); }} placeholder="Search notifications" aria-label="Search notifications" /></label>
                   {!notifications.length ? <p className="notification-empty">You’re all caught up.</p> : (
                     <ul>
                       {notifications.map((item) => (
@@ -1423,6 +1481,11 @@ export default function Home() {
                       ))}
                     </ul>
                   )}
+                  <div className="notification-pagination">
+                    <button type="button" onClick={() => setNotificationsPage((page) => Math.max(0, page - 1))} disabled={notificationsPage === 0}>Previous</button>
+                    <span>Page {notificationsPage + 1}</span>
+                    <button type="button" onClick={() => setNotificationsPage((page) => page + 1)} disabled={notifications.length < 20}>Next</button>
+                  </div>
                 </section>
               )}
             </div>
@@ -1499,20 +1562,22 @@ export default function Home() {
           {view === "equipment" && (
             <>
               <div className="toolbar">
-                <label className="search-box"><Search size={18} /><input ref={searchInputRef} value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search equipment, tag or location" aria-label="Search equipment" /><kbd>{searchShortcut}</kbd></label>
+                <label className="search-box"><Search size={18} /><input ref={searchInputRef} value={search} onChange={(event) => { setSearch(event.target.value); resetEquipmentPagination(); }} placeholder="Search equipment, tag or location" aria-label="Search equipment" /><kbd>{searchShortcut}</kbd></label>
                 <div className="category-tabs" role="group" aria-label="Filter by category">
-                  {categories.map((item) => <button key={item} className={category === item ? "selected" : ""} onClick={() => setCategory(item)}>{item}</button>)}
+                  {categories.map((item) => <button key={item} className={category === item ? "selected" : ""} onClick={() => { setCategory(item); resetEquipmentPagination(); }}>{item}</button>)}
                 </div>
-                <span className="filter-caption"><Filter size={15} /> {filteredEquipment.length} results</span>
+                <span className="filter-caption"><Filter size={15} /> {equipmentTotalCount} results</span>
               </div>
               {loading ? <LoadingPanel /> : filteredEquipment.length ? (
                 <div className="equipment-grid">
                   {filteredEquipment.map((item) => <EquipmentCard key={item.id} item={item} canRequest={!isEquipmentManager} onBorrow={(selected) => setModal({ kind: "borrow", item: selected })} onReserve={(selected) => setModal({ kind: "reservation", item: selected })} />)}
                 </div>
               ) : <EmptyState title={equipment.length ? "No matching equipment" : "No equipment has been added yet"} copy={equipment.length ? "Try another search or category." : "The inventory team can add equipment to make it available here."} action={isEquipmentManager && !equipment.length ? "Add equipment" : null} onAction={() => setModal({ kind: "add-equipment" })} />}
+              <nav className="unit-pagination" aria-label="Equipment pages"><span>Page {equipmentPageIndex + 1} · {equipment.length} of {equipmentTotalCount} items</span><div><button className="button-secondary" type="button" onClick={() => setEquipmentPageIndex((index) => Math.max(0, index - 1))} disabled={equipmentPageIndex === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={nextEquipmentPage} disabled={equipment.length < 20}>Next <ArrowRight size={14} /></button></div></nav>
               {isEquipmentManager && (
                 <>
-                  <div className="section-title"><div><h2>Manage equipment</h2><p>Edit item details or remove retired equipment from the active library.</p></div><span className="record-count">{equipment.length} active items</span></div>
+                  <div className="section-title"><div><h2>Manage equipment</h2><p>Edit item details or remove retired equipment from the active library.</p></div><span className="record-count">{equipmentTotalCount} active items</span></div>
+                  <div className="unit-management-link"><Link className="button-secondary" href="/equipment-units">Manage units, maintenance, and labels <ArrowUpRight size={15} /></Link></div>
                   <EquipmentTable
                     equipment={equipment}
                     onEdit={(item) => setModal({ kind: "edit-equipment", item })}
@@ -1539,10 +1604,14 @@ export default function Home() {
               </div>
               <BorrowingList
                 rows={myBorrowings}
+                page={borrowingsPage}
+                hasMore={borrowings.length === 20}
+                onPageChange={setBorrowingsPage}
                 onRequestReturn={(row) => runAction(() => supabase.rpc("request_equipment_return", { p_borrowing_id: row.id }), "Return request submitted.")}
                 onCancelRequest={(row) => runAction(() => supabase.rpc("cancel_my_pending_borrowing", { p_borrowing_id: row.id }), "Borrowing request cancelled.")}
                 loading={loading}
               />
+              {currentUnitTags.length > 0 && <section className="borrower-unit-tags"><div className="section-title"><div><h2>Unit tags currently assigned to you</h2><p>Only the asset tags of your held units are shown here.</p></div></div><ul>{currentUnitTags.map((unit, index) => <li key={`${unit.asset_tag}-${index}`}>{unit.asset_tag}</li>)}</ul></section>}
               <div className="section-title"><div><h2>My reservations</h2><p>Upcoming and past reservation requests</p></div><span className="record-count">{myReservations.length} records</span></div>
               <ReservationList
                 rows={myReservations}
@@ -1556,6 +1625,11 @@ export default function Home() {
             <AdminRequests
               borrowings={borrowings}
               reservations={reservations}
+              search={borrowingsSearch}
+              onSearchChange={(value) => { setBorrowingsSearch(value); setBorrowingsPage(0); }}
+              page={borrowingsPage}
+              hasMore={borrowings.length === 20}
+              onPageChange={setBorrowingsPage}
               busy={busy}
               runAction={runAction}
               supabase={supabase}
@@ -1605,8 +1679,10 @@ export default function Home() {
                   <button className="button-secondary" onClick={() => downloadReport("overdue")}><Download size={14} /> Overdue</button>
                 </div>
               </div>}
-              <div className="section-title"><div><h2>Equipment change history</h2><p>Database-recorded additions, edits, and removals.</p></div><span className="record-count">{equipmentAudit.length} recent changes</span></div>
+              <div className="section-title"><div><h2>Equipment change history</h2><p>Database-recorded additions, edits, and removals.</p></div><span className="record-count">Page {auditPage + 1} · {equipmentAudit.length} changes</span></div>
+              <label className="search-box audit-search"><Search size={16} /><input value={auditSearch} onChange={(event) => { setAuditSearch(event.target.value); setAuditPage(0); }} placeholder="Search asset code" aria-label="Search audit history by asset code" /></label>
               <EquipmentAuditLog entries={equipmentAudit} />
+              <nav className="unit-pagination" aria-label="Audit history pages"><span>Page {auditPage + 1}</span><div><button className="button-secondary" type="button" onClick={() => setAuditPage((page) => Math.max(0, page - 1))} disabled={auditPage === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => setAuditPage((page) => page + 1)} disabled={equipmentAudit.length < 20}>Next <ArrowRight size={14} /></button></div></nav>
             </>
           )}
 
@@ -1655,7 +1731,7 @@ export default function Home() {
                 <form className="modal-form" onSubmit={modal.kind === "edit-equipment" ? updateEquipment : addEquipment}>
                   <label><span>Equipment name</span><input name="name" placeholder="e.g. Canon EOS R6" defaultValue={modal.item?.name || ""} required maxLength={160} /></label>
                   <div className="form-row"><label><span>Asset code</span><input name="asset_tag" placeholder="CAM-001" defaultValue={modal.item?.asset_tag || ""} required maxLength={80} /></label><label><span>Category</span><select name="category_id" defaultValue={modal.item?.category_id || ""} required><option value="" disabled>Select a category</option>{categoryOptions.map((option) => <option key={option.category_id} value={option.category_id}>{option.category_name}</option>)}</select></label></div>
-                  <label><span>Amount</span><input name="quantity" type="number" min="0" max="10000" step="1" defaultValue={modal.item?.quantity ?? 1} required /></label>
+                  <label><span>Amount</span><input name="quantity" type="number" min="0" max="10000" step="1" defaultValue={modal.item?.quantity ?? 1} readOnly={modal.item?.tracking_mode === "unit"} required />{modal.item?.tracking_mode === "unit" && <small className="field-hint">Unit count is maintained from the equipment units page.</small>}</label>
                   <div className="form-row"><label><span>Brand (optional)</span><input name="brand" defaultValue={modal.item?.brand || ""} maxLength={120} /></label><label><span>Model (optional)</span><input name="model" defaultValue={modal.item?.model || ""} maxLength={120} /></label></div>
                   <label><span>Serial number (optional)</span><input name="serial_number" defaultValue={modal.item?.serial_number || ""} maxLength={160} /></label>
                   <label><span>Storage location</span><input name="location" placeholder="Media office · Cabinet 2" defaultValue={modal.item?.location || ""} maxLength={200} /></label>
@@ -1756,7 +1832,7 @@ function PasswordRecoveryDialog({ supabase, onComplete }) {
   );
 }
 
-function BorrowingList({ rows, onRequestReturn, onCancelRequest, loading }) {
+function BorrowingList({ rows, onRequestReturn, onCancelRequest, loading, page, hasMore, onPageChange }) {
   if (loading) return <LoadingPanel />;
   if (!rows.length) return <EmptyState title="No borrowing activity yet" copy="When you request equipment, updates will appear here." />;
   return (
@@ -1777,6 +1853,7 @@ function BorrowingList({ rows, onRequestReturn, onCancelRequest, loading }) {
           </div>
         </article>
       ))}
+      <nav className="unit-pagination" aria-label="Borrowing history pages"><span>Page {page + 1}</span><div><button className="button-secondary" type="button" onClick={() => onPageChange(Math.max(0, page - 1))} disabled={page === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => onPageChange(page + 1)} disabled={!hasMore}>Next <ArrowRight size={14} /></button></div></nav>
     </div>
   );
 }
@@ -1817,12 +1894,13 @@ function BorrowingTable({ rows, loading }) {
   );
 }
 
-function AdminRequests({ borrowings, reservations, busy, runAction, supabase, canReview, userId }) {
-  const [borrowerSearch, setBorrowerSearch] = useState("");
+function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSearchChange, page, hasMore, onPageChange, busy, runAction, supabase, canReview, userId }) {
   const [pickupGraceMinutes, setPickupGraceMinutes] = useState("");
   const [settingsError, setSettingsError] = useState("");
   const [workflowError, setWorkflowError] = useState("");
   const [overdueItems, setOverdueItems] = useState([]);
+  const [overduePage, setOverduePage] = useState(0);
+  const [overdueSearch, setOverdueSearch] = useState("");
   const [damageReports, setDamageReports] = useState([]);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const query = borrowerSearch.trim().toLocaleLowerCase();
@@ -1838,7 +1916,7 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
           .select("pickup_grace_period_minutes")
           .eq("singleton", true)
           .single(),
-        supabase.rpc("list_overdue_borrowings"),
+        supabase.rpc("list_overdue_borrowings_page", { p_page: overduePage, p_search: overdueSearch.trim() || null }),
         supabase.rpc("list_damage_loss_reports"),
       ]);
       if (!active) return;
@@ -1866,7 +1944,7 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
     }
     loadOperationalData();
     return () => { active = false; };
-  }, [canReview, supabase, workflowRefreshKey]);
+  }, [canReview, supabase, workflowRefreshKey, overduePage, overdueSearch]);
 
   async function savePickupGracePeriod(event) {
     event.preventDefault();
@@ -1886,7 +1964,7 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
     );
   }
 
-  async function submitCondition(item, stage, condition, file, notes) {
+  async function submitCondition(item, stage, condition, file, notes, unitAssignments = []) {
     const successMessage = stage === "release" ? "Equipment released to borrower." : "Equipment return recorded.";
     const completed = await runAction(async () => {
       const photoPath = await uploadItemConditionPhoto(
@@ -1895,13 +1973,28 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
         file,
         `${stage} condition`,
       );
-      const rpcName = stage === "release" ? "release_equipment_borrowing" : "complete_equipment_return";
-      const { error } = await supabase.rpc(rpcName, {
-        p_borrowing_id: item.id,
-        p_condition: condition,
-        p_photo_path: photoPath,
-        p_condition_notes: notes || null,
-      });
+      const { error } = stage === "release" && item.unit_items?.length
+        ? await supabase.rpc("release_equipment_borrowing_units", {
+          p_borrowing_id: item.id,
+          p_assignments: unitAssignments,
+          p_condition: condition,
+          p_photo_path: photoPath,
+          p_condition_notes: notes || null,
+        })
+        : stage === "return" && item.active_unit_item
+          ? await supabase.rpc("complete_equipment_unit_return", {
+            p_borrowing_item_id: item.active_unit_item.borrowing_item_id,
+            p_condition: condition,
+            p_asset_tag: unitAssignments[0]?.asset_tag || null,
+            p_photo_path: photoPath,
+            p_condition_notes: notes || null,
+          })
+          : await supabase.rpc(stage === "release" ? "release_equipment_borrowing" : "complete_equipment_return", {
+            p_borrowing_id: item.id,
+            p_condition: condition,
+            p_photo_path: photoPath,
+            p_condition_notes: notes || null,
+          });
       if (error) {
         if (photoPath) {
           const { error: cleanupError } = await supabase.storage
@@ -1949,8 +2042,9 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
   return (
     <>
       <div className="toolbar request-search-toolbar">
-        <label className="search-box"><Search size={18} /><input value={borrowerSearch} onChange={(event) => setBorrowerSearch(event.target.value)} placeholder="Search borrower first or last name" aria-label="Search borrower requests by first or last name" /><kbd>⌕</kbd></label>
+        <label className="search-box"><Search size={18} /><input value={borrowerSearch} onChange={(event) => onSearchChange(event.target.value)} placeholder="Search borrower first or last name" aria-label="Search borrower requests by first or last name" /><kbd>⌕</kbd></label>
         <span className="filter-caption">{pendingBorrowings.length + pendingReservations.length} matching requests</span>
+        <div className="unit-pagination"><span>Borrowings page {page + 1}</span><div><button className="button-secondary" type="button" onClick={() => onPageChange(Math.max(0, page - 1))} disabled={page === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => onPageChange(page + 1)} disabled={!hasMore}>Next <ArrowRight size={14} /></button></div></div>
       </div>
       {canReview && <div className="toolbar reservation-grace-toolbar">
         <div className="reservation-grace-copy"><strong>Reservation pickup grace period</strong><small>Unpicked reservations expire this many minutes after their scheduled start.</small></div>
@@ -2008,7 +2102,10 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
               {canReview && <WorkflowConditionAction
                 stage="release"
                 busy={busy}
-                onSubmit={(condition, file, notes) => submitCondition(item, "release", condition, file, notes)}
+                supabase={supabase}
+                item={item}
+                refreshKey={workflowRefreshKey}
+                onSubmit={(condition, file, notes, assignments) => submitCondition(item, "release", condition, file, notes, assignments)}
               />}
             </article>
           ))}
@@ -2024,7 +2121,10 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
               {canReview && <WorkflowConditionAction
                 stage="return"
                 busy={busy}
-                onSubmit={(condition, file, notes) => submitCondition(item, "return", condition, file, notes)}
+                supabase={supabase}
+                item={item}
+                refreshKey={workflowRefreshKey}
+                onSubmit={(condition, file, notes, assignments) => submitCondition({ ...item, active_unit_item: assignments[0] }, "return", condition, file, notes, assignments)}
               />}
             </article>
           ))}
@@ -2032,6 +2132,7 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
       )}
       {canReview && <>
         <div className="section-title"><div><h2>Overdue items</h2><p>Borrowers with overdue items cannot submit new borrowing or reservation requests.</p></div><span className="record-count">{overdueItems.length} overdue</span></div>
+        <label className="search-box overdue-search"><Search size={16} /><input value={overdueSearch} onChange={(event) => { setOverdueSearch(event.target.value); setOverduePage(0); }} placeholder="Search overdue items or borrower" aria-label="Search overdue items" /></label>
         {workflowError && <p className="reservation-grace-error" role="alert">{workflowError}</p>}
         {!overdueItems.length ? <EmptyState title="No overdue items" copy="Items past their return date will be listed here after the daily overdue check." /> : (
           <div className="table-wrap inventory-table">
@@ -2046,6 +2147,7 @@ function AdminRequests({ borrowings, reservations, busy, runAction, supabase, ca
             </table>
           </div>
         )}
+        <nav className="unit-pagination" aria-label="Overdue item pages"><span>Page {overduePage + 1} · {overdueItems.length} items</span><div><button className="button-secondary" type="button" onClick={() => setOverduePage((page) => Math.max(0, page - 1))} disabled={overduePage === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => setOverduePage((page) => page + 1)} disabled={overdueItems.length < 20}>Next <ArrowRight size={14} /></button></div></nav>
         <div className="section-title"><div><h2>Damage and loss reports</h2><p>Track follow-up and resolution for reported damage or lost items.</p></div><span className="record-count">{damageReports.length} reports</span></div>
         {!damageReports.length ? <EmptyState title="No damage or loss reports" copy="Reports will be created when staff record damaged or lost equipment." /> : (
           <div className="admin-request-list">
@@ -2131,20 +2233,74 @@ function DeclineRequestControl({ busy, onDecline }) {
   );
 }
 
-function WorkflowConditionAction({ stage, busy, onSubmit }) {
+function WorkflowConditionAction({ stage, busy, onSubmit, supabase, item, refreshKey }) {
   const [condition, setCondition] = useState("good");
   const [notes, setNotes] = useState("");
+  const [unitAssignments, setUnitAssignments] = useState([]);
+  const [assignedUnits, setAssignedUnits] = useState([]);
+  const [unitError, setUnitError] = useState("");
+  const unitItems = item.unit_items || [];
+
+  useEffect(() => {
+    if (stage !== "return" || !unitItems.length) return undefined;
+    let active = true;
+    supabase.rpc("list_borrowing_unit_assignments", { p_borrowing_id: item.id }).then(({ data, error }) => {
+      if (!active) return;
+      if (error) setUnitError(error.message);
+      else setAssignedUnits((data || []).filter((assignment) => assignment.unit_status === "borrowed"));
+    });
+    return () => { active = false; };
+  }, [stage, supabase, item.id, unitItems.length, refreshKey]);
+
+  async function lookupUnit(index, tag) {
+    const assetTag = tag.trim();
+    if (!assetTag) return;
+    setUnitError("");
+    const { data, error } = await supabase.rpc("lookup_equipment_unit_by_tag", { p_asset_tag: assetTag });
+    if (error) {
+      setUnitError(error.message);
+      return;
+    }
+    const unit = data?.[0];
+    const expectedItem = stage === "release" ? unitItems[index] : null;
+    if (!unit) {
+      setUnitError(`Unknown asset tag: ${assetTag}`);
+      return;
+    }
+    if (stage === "release" && (unit.status !== "available" || unit.equipment_id !== expectedItem.equipment_id)) {
+      setUnitError(`Unit ${assetTag} is unavailable or belongs to different equipment.`);
+      return;
+    }
+    const assignedUnit = stage === "return"
+      ? assignedUnits.find((assignment) => assignment.unit_id === unit.unit_id && assignment.unit_status === "borrowed")
+      : null;
+    if (stage === "return" && !assignedUnit) {
+      setUnitError(`Unit ${assetTag} is not assigned to this active borrowing.`);
+      return;
+    }
+    setUnitAssignments((current) => {
+      const next = [...current];
+      next[index] = stage === "release"
+        ? { borrowing_item_id: expectedItem.borrowing_item_id, unit_id: unit.unit_id, asset_tag: unit.asset_tag }
+        : { borrowing_item_id: assignedUnit.borrowing_item_id, unit_id: unit.unit_id, asset_tag: unit.asset_tag };
+      return next;
+    });
+  }
 
   function submit(event) {
     event.preventDefault();
     const form = new FormData(event.currentTarget);
-    onSubmit(condition, form.get("condition_photo"), notes.trim());
+    onSubmit(condition, form.get("condition_photo"), notes.trim(), unitAssignments);
   }
 
   const needsReport = stage === "release"
     ? condition === "damaged"
     : ["damaged", "lost"].includes(condition);
   const isRelease = stage === "release";
+  const missingUnitAssignment = unitItems.length > 0
+    && (isRelease
+      ? unitAssignments.length !== unitItems.length || unitAssignments.some((assignment) => !assignment?.unit_id)
+      : !unitAssignments[0]?.asset_tag || !unitAssignments[0]?.borrowing_item_id);
 
   return (
     <form className="workflow-condition-form" onSubmit={submit}>
@@ -2157,6 +2313,36 @@ function WorkflowConditionAction({ stage, busy, onSubmit }) {
           {!isRelease && <option value="lost">Lost</option>}
         </select>
       </label>
+      {unitItems.length > 0 && (isRelease ? (
+        <fieldset className="unit-assignment-fields">
+          <legend>Assign a unit to each item</legend>
+          {unitItems.map((unitItem, index) => <UnitTagField
+            key={unitItem.borrowing_item_id}
+            label={`Unit ${index + 1} of ${unitItems.length}`}
+            value={unitAssignments[index]?.asset_tag || ""}
+            disabled={busy}
+            onChange={(value) => setUnitAssignments((current) => {
+              const next = [...current];
+              next[index] = null;
+              return next;
+            })}
+            onLookup={(value) => lookupUnit(index, value)}
+          />)}
+          {unitError && <p className="feedback feedback-error" role="alert">{unitError}</p>}
+        </fieldset>
+      ) : (
+        <fieldset className="unit-assignment-fields">
+          <legend>Scan or enter the returned unit tag</legend>
+          <UnitTagField
+            label="Assigned unit"
+            value={unitAssignments[0]?.asset_tag || ""}
+            disabled={busy || assignedUnits.length === 0}
+            onChange={() => setUnitAssignments([])}
+            onLookup={(value) => lookupUnit(0, value)}
+          />
+          {unitError && <p className="feedback feedback-error" role="alert">{unitError}</p>}
+        </fieldset>
+      ))}
       {needsReport && <label>
         <span>{condition === "lost" ? "Loss details" : "Damage details"}</span>
         <textarea value={notes} onChange={(event) => setNotes(event.target.value)} maxLength={2000} rows="2" required disabled={busy} />
@@ -2165,10 +2351,82 @@ function WorkflowConditionAction({ stage, busy, onSubmit }) {
         <span>Condition photo (optional)</span>
         <input name="condition_photo" type="file" accept="image/jpeg,image/png,image/webp" disabled={busy} />
       </label>
-      <button className="button-primary" type="submit" disabled={busy || (needsReport && !notes.trim())}>
+      <button className="button-primary" type="submit" disabled={busy || missingUnitAssignment || (needsReport && !notes.trim())}>
         {isRelease ? "Record release" : "Receive return"}
       </button>
     </form>
+  );
+}
+
+function UnitTagField({ label, value, disabled, onChange, onLookup }) {
+  const [tag, setTag] = useState(value);
+  const [cameraOpen, setCameraOpen] = useState(false);
+  const [cameraError, setCameraError] = useState("");
+  const videoRef = useRef(null);
+  const lookupRef = useRef(onLookup);
+  const changeRef = useRef(onChange);
+  lookupRef.current = onLookup;
+  changeRef.current = onChange;
+
+  useEffect(() => {
+    if (!cameraOpen) return undefined;
+    let active = true;
+    let stream;
+    let animationFrame;
+    async function scan() {
+      if (!("BarcodeDetector" in window)) {
+        setCameraError("QR scanning is not supported in this browser. Enter the asset tag manually.");
+        setCameraOpen(false);
+        return;
+      }
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        if (!active) {
+          stream.getTracks().forEach((track) => track.stop());
+          return;
+        }
+        videoRef.current.srcObject = stream;
+        await videoRef.current.play();
+        const detector = new window.BarcodeDetector({ formats: ["qr_code"] });
+        const detectFrame = async () => {
+          if (!active || !videoRef.current) return;
+          try {
+            const codes = await detector.detect(videoRef.current);
+            if (codes[0]?.rawValue) {
+              const scannedTag = codes[0].rawValue;
+              setTag(scannedTag);
+              changeRef.current(scannedTag);
+              await lookupRef.current(scannedTag);
+              setCameraOpen(false);
+              return;
+            }
+          } catch {
+            setCameraError("Could not read the QR code. Try entering the asset tag manually.");
+          }
+          animationFrame = window.requestAnimationFrame(detectFrame);
+        };
+        detectFrame();
+      } catch (scanError) {
+        setCameraError(scanError.message || "Camera access failed. Enter the asset tag manually.");
+        setCameraOpen(false);
+      }
+    }
+    scan();
+    return () => {
+      active = false;
+      window.cancelAnimationFrame(animationFrame);
+      stream?.getTracks().forEach((track) => track.stop());
+    };
+  }, [cameraOpen]);
+
+  return (
+    <div className="unit-tag-field">
+      <label><span>{label}</span><input value={tag} onChange={(event) => { setTag(event.target.value); onChange(event.target.value); }} disabled={disabled} maxLength={120} required /></label>
+      <button className="button-secondary" type="button" disabled={disabled} onClick={() => onLookup(tag)} title="Look up this asset tag">Look up</button>
+      <button className="button-icon" type="button" disabled={disabled} onClick={() => { setCameraError(""); setCameraOpen(true); }} aria-label="Scan QR code" title="Scan QR code"><Camera size={16} /></button>
+      {cameraOpen && <div className="unit-camera-panel"><video ref={videoRef} muted playsInline /><button className="button-secondary" type="button" onClick={() => setCameraOpen(false)}>Stop camera</button></div>}
+      {cameraError && <small className="unit-camera-error" role="alert">{cameraError}</small>}
+    </div>
   );
 }
 
