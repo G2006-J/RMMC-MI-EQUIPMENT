@@ -1674,6 +1674,8 @@ export default function Home() {
 
           {view === "reports" && isEquipmentManager && <ReportsWorkspace supabase={supabase} />}
 
+          {view === "audit-log" && isAdmin && <AuditLogWorkspace supabase={supabase} isAdmin={isAdmin} />}
+
           {view === "feedback" && (
             <FeedbackBoard
               threads={feedbackThreads}
