@@ -154,8 +154,12 @@ jobs:
         env:
           SUPABASE_WORKDIR: ${{ runner.temp }}/rmmc-db-tests
         run: |
-          set -euo pipefail
-          eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
+          set -uo pipefail
+          status_output="$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)" || {
+            echo "Failed to read local Supabase status." >&2
+            exit 1
+          }
+          eval "$status_output"
 
           shopt -s nullglob
           tests=(supabase/tests/*.sql)
@@ -163,11 +167,33 @@ jobs:
             echo "No SQL tests found in supabase/tests/." >&2
             exit 1
           fi
+          failed_files=()
+          failed_statuses=()
+          failed_errors=()
           for test_file in "${tests[@]}"; do
             echo "Running $test_file"
-            psql --set ON_ERROR_STOP=1 --set race_barrier=off \
-              --file "$test_file" "$DB_URL"
+            test_log="$RUNNER_TEMP/$(basename "$test_file").log"
+            if psql --set ON_ERROR_STOP=1 --set race_barrier=off \
+              --file "$test_file" "$DB_URL" >"$test_log" 2>&1; then
+              echo "PASS: $test_file"
+            else
+              test_status=$?
+              first_error="$(grep -m 1 -E 'ERROR:|FATAL:|PANIC:|psql:' "$test_log" || head -n 1 "$test_log")"
+              failed_files+=("$test_file")
+              failed_statuses+=("$test_status")
+              failed_errors+=("$first_error")
+              echo "FAIL: $test_file (exit $test_status): $first_error"
+            fi
           done
+
+          echo "SQL test summary: ${#tests[@]} files, $((${#tests[@]} - ${#failed_files[@]})) passed, ${#failed_files[@]} failed."
+          if (( ${#failed_files[@]} > 0 )); then
+            for index in "${!failed_files[@]}"; do
+              printf 'FAIL: %s (exit %s): %s\n' \
+                "${failed_files[$index]}" "${failed_statuses[$index]}" "${failed_errors[$index]}"
+            done
+            exit 1
+          fi
 
       - name: Prove the concurrency test catches a missing lock
         env:

@@ -463,7 +463,7 @@ begin
     if sqlerrm not like '%Every selected borrowing must still be approved%' then
       raise;
     end if;
-  end if;
+  end;
 
   begin
     perform public.review_borrowing_request(v_decline_borrowing_id, 'reject', null);
