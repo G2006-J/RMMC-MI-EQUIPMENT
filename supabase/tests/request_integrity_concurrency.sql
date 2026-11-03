@@ -2,6 +2,8 @@
 
 create extension if not exists dblink;
 
+select set_config('test.dblink_connection', :'dblink_connection', false);
+
 create sequence public.phase4_approval_barrier_seq
   start with 1 minvalue 1;
 
@@ -156,7 +158,7 @@ declare
 begin
   select * into strict v_fixture from pg_temp.phase4_concurrency_fixture;
 
-  perform dblink_connect('phase4_gate', 'dbname=' || current_database());
+  perform dblink_connect('phase4_gate', current_setting('test.dblink_connection'));
   perform dblink_exec('phase4_gate', 'begin');
   perform equipment_id
   from dblink(
@@ -168,8 +170,8 @@ begin
     false
   ) as locked_equipment(equipment_id bigint);
 
-  perform dblink_connect('phase4_approval_a', 'dbname=' || current_database());
-  perform dblink_connect('phase4_approval_b', 'dbname=' || current_database());
+  perform dblink_connect('phase4_approval_a', current_setting('test.dblink_connection'));
+  perform dblink_connect('phase4_approval_b', current_setting('test.dblink_connection'));
 
   if dblink_send_query(
     'phase4_approval_a',

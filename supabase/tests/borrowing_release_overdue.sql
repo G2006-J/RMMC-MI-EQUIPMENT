@@ -262,6 +262,8 @@ begin
     ) then
     raise exception 'Requested borrowings must not reduce availability or capacity.';
   end if;
+  perform set_config('request.jwt.claim.sub', v_manager::text, true);
+  perform set_config('request.jwt.claims', jsonb_build_object('sub', v_manager)::text, true);
   update public.reservations
   set status = 'approved'
   where reservation_id = v_test_reservation_id;
@@ -284,6 +286,12 @@ begin
   update public.reservations
   set status = 'cancelled'
   where reservation_id = v_test_reservation_id;
+  perform set_config('request.jwt.claim.sub', v_borrower_user::text, true);
+  perform set_config(
+    'request.jwt.claims',
+    jsonb_build_object('sub', v_borrower_user, 'email', v_borrower_email)::text,
+    true
+  );
 
   insert into public.borrowings (
     transaction_code, borrower_id, processed_by, purpose, destination, expected_return_date

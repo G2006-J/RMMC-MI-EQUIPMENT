@@ -65,6 +65,13 @@ jobs:
             --header "apikey: $SERVICE_ROLE_KEY" \
             --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
             --header "Content-Type: application/json" \
+            --data '{"email":"ci-custodian@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Custodian","privacy_consent":"true","privacy_consent_version":"2026-11-03-v1"}}' \
+            >/dev/null
+          curl --fail --silent --show-error \
+            --request POST "$API_URL/auth/v1/admin/users" \
+            --header "apikey: $SERVICE_ROLE_KEY" \
+            --header "Authorization: Bearer $SERVICE_ROLE_KEY" \
+            --header "Content-Type: application/json" \
             --data '{"email":"ci-student@example.com","password":"ci-only-password-123!","email_confirm":true,"user_metadata":{"first_name":"CI","last_name":"Student","course":"CI","privacy_consent":"true","privacy_consent_version":"2026-11-03-v1"}}' \
             >/dev/null
           curl --fail --silent --show-error \
@@ -79,6 +86,15 @@ jobs:
           update public.profiles
           set role = 'admin', account_status = 'active'
           where email = 'ci-admin@example.com';
+
+          update public.profiles
+          set role = 'property_custodian', account_status = 'active'
+          where email = 'ci-custodian@example.com';
+
+          update public.borrowers
+          set status = 'active'
+          where email = 'ci-custodian@example.com'
+            and user_id = (select id from auth.users where email = 'ci-custodian@example.com');
 
           update public.profiles
           set role = 'staff', account_status = 'active'
@@ -97,6 +113,15 @@ jobs:
           set status = 'active'
           where email = 'ci-phase8@example.com'
             and user_id = (select id from auth.users where email = 'ci-phase8@example.com');
+
+          insert into public.categories (category_name, description)
+          values ('CI fixture category', 'Created by the database test workflow.')
+          on conflict (category_name) do nothing;
+
+          insert into public.equipment (asset_code, equipment_name, category_id, quantity, availability_status)
+          select 'CI-PHASE8-EQUIPMENT', 'Phase 8 fixture equipment', category_id, 1, 'available'
+          from public.categories where category_name = 'CI fixture category'
+          on conflict (asset_code) do nothing;
 
           insert into public.borrower_agreement_acceptances (user_id, version_id)
           select u.id, v.version_id
@@ -131,6 +156,36 @@ jobs:
             ) then
               raise exception 'Failed to create the active student fixture.';
             end if;
+            if not exists (
+              select 1
+              from public.profiles p
+              join auth.users u on u.id = p.id
+              join public.borrowers b on b.user_id = p.id
+              where p.email = 'ci-custodian@example.com'
+                and p.role = 'property_custodian' and p.account_status = 'active'
+                and b.status = 'active' and u.email_confirmed_at is not null
+            ) then
+              raise exception 'Failed to create the active, email-confirmed property custodian fixture with linked borrower.';
+            end if;
+            if not exists (
+              select 1
+              from public.profiles p
+              join auth.users u on u.id = p.id
+              join public.borrowers b on b.user_id = p.id
+              where p.email = 'ci-phase8@example.com'
+                and p.role = 'staff' and p.account_status = 'active'
+                and b.status = 'active' and u.email_confirmed_at is not null
+            ) then
+              raise exception 'Failed to create the active, email-confirmed Phase 8 borrower fixture.';
+            end if;
+            if not exists (
+              select 1 from public.equipment e
+              join public.categories c using (category_id)
+              where e.asset_code = 'CI-PHASE8-EQUIPMENT'
+                and c.category_name = 'CI fixture category'
+            ) then
+              raise exception 'Failed to create the Phase 8 equipment and category fixtures.';
+            end if;
           end;
           $$;
           SQL
@@ -160,6 +215,7 @@ jobs:
             exit 1
           }
           eval "$status_output"
+          dblink_connection="$(node -e 'const db = new URL(process.env.DB_URL); db.hostname = "127.0.0.1"; db.port = "5432"; process.stdout.write(db.toString());')"
 
           shopt -s nullglob
           tests=(supabase/tests/*.sql)
@@ -174,6 +230,7 @@ jobs:
             echo "Running $test_file"
             test_log="$RUNNER_TEMP/$(basename "$test_file").log"
             if psql --set ON_ERROR_STOP=1 --set race_barrier=off \
+              --set dblink_connection="$dblink_connection" \
               --file "$test_file" "$DB_URL" >"$test_log" 2>&1; then
               echo "PASS: $test_file"
             else
@@ -183,6 +240,7 @@ jobs:
               failed_statuses+=("$test_status")
               failed_errors+=("$first_error")
               echo "FAIL: $test_file (exit $test_status): $first_error"
+              cat "$test_log"
             fi
           done
 
@@ -201,11 +259,13 @@ jobs:
         run: |
           set -euo pipefail
           eval "$(supabase --workdir "$SUPABASE_WORKDIR" status --output env)"
+          dblink_connection="$(node -e 'const db = new URL(process.env.DB_URL); db.hostname = "127.0.0.1"; db.port = "5432"; process.stdout.write(db.toString());')"
           psql --set ON_ERROR_STOP=1 \
             --file .github/scripts/remove-approval-equipment-lock.sql "$DB_URL"
 
           mutation_log="$RUNNER_TEMP/concurrency-lock-mutation.log"
           if psql --set ON_ERROR_STOP=1 --set race_barrier=on \
+            --set dblink_connection="$dblink_connection" \
             --file supabase/tests/request_integrity_concurrency.sql "$DB_URL" \
             >"$mutation_log" 2>&1; then
             cat "$mutation_log"
