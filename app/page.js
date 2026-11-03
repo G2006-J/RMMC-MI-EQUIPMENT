@@ -140,7 +140,6 @@ function ProfileAvatar({ name, photoUrl, className = "avatar" }) {
       {photoUrl ? <img src={photoUrl} alt={`${name}'s profile`} /> : <UserRound size={18} aria-hidden="true" />}
     </span>
   );
-}
 
 const getErrorMessage = (error) => {
   const message = error?.message || "Something went wrong. Please try again.";
@@ -623,8 +622,6 @@ export default function Home() {
     let borrowingQuery = client.from("borrowings")
       .select("*, borrowers!inner(borrower_id, first_name, middle_name, last_name, email, department), borrowing_items(borrowing_item_id, borrowing_id, equipment_id, item_status, issued_at, returned_at, quantity, released_by, released_at, received_by, condition_at_release, release_photo_path, condition_at_return, return_photo_path, is_overdue, overdue_at, equipment(equipment_id, asset_code, equipment_name, category_id, storage_location, availability_status, tracking_mode, categories(category_name)))")
       .order("created_at", { ascending: false }).order("borrowing_id", { ascending: false }).range(borrowingsPage * 20, borrowingsPage * 20 + 19);
-    const safeBorrowingSearch = borrowingsSearch.trim().replace(/[\\%,()\"]/g, "\\$&");
-    if (safeBorrowingSearch) {
     const safeBorrowingSearch = borrowingsSearch.trim().replace(/[\\%,()"]/g, "\\$&");
     if (safeBorrowingSearch) {
       borrowingQuery = borrowingQuery.or(
@@ -2626,7 +2623,5 @@ function PendingAccounts({ accounts, busy, runAction, supabase }) {
       </table>
       <p className="table-note">Only administrators and property custodians can approve or reject access. Each decision is recorded in the account access audit log.</p>
     </div>
-  );
-}
   );
 }

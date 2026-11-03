@@ -13,6 +13,7 @@ declare
   v_unit_equipment bigint;
   v_unit bigint;
   v_approve bigint;
+  v_approve_two bigint;
   v_decline bigint;
   v_item bigint;
   v_thread bigint;
@@ -48,9 +49,22 @@ begin
   insert into public.borrowings(transaction_code,borrower_id,processed_by,purpose,destination,expected_return_date)
     values(v_code||'-A',v_unlinked,v_admin,'fixture','Room 1',now()+interval '5 days') returning borrowing_id into v_approve;
   insert into public.borrowing_items(borrowing_id,equipment_id,item_status,quantity) values(v_approve,v_equipment,'requested',1);
+  insert into public.borrowings(transaction_code,borrower_id,processed_by,purpose,destination,expected_return_date)
+    values(v_code||'-A2',v_unlinked,v_admin,'fixture','Room 1',now()+interval '5 days') returning borrowing_id into v_approve_two;
+  insert into public.borrowing_items(borrowing_id,equipment_id,item_status,quantity) values(v_approve_two,v_equipment,'requested',1);
   perform public.review_borrowing_request(v_approve,'approve');
-  select count(*) into v_count from public.phase7_audit_log where event_type='request_approved' and entity_id=v_approve::text and actor_id=v_admin;
-  if v_count<>1 then raise exception 'Parent and item approval updates must produce exactly one canonical event.'; end if;
+  perform public.review_borrowing_request(v_approve_two,'approve');
+  select count(*) into v_count from public.phase7_audit_log
+  where event_type='request_approved' and actor_id=v_admin and entity_id in (v_approve::text,v_approve_two::text);
+  if v_count<>2
+    or (select count(*) from public.phase7_audit_log where event_type='request_approved' and entity_id=v_approve::text and actor_id=v_admin)<>1
+    or (select count(*) from public.phase7_audit_log where event_type='request_approved' and entity_id=v_approve_two::text and actor_id=v_admin)<>1
+    or (select count(distinct transaction_id) from public.phase7_audit_log where event_type='request_approved' and actor_id=v_admin and entity_id in (v_approve::text,v_approve_two::text))<>1 then
+    raise exception 'Two same-transaction approvals must create one canonical row per borrowing.';
+  end if;
+  if position('entity_id' in pg_get_indexdef('public.phase7_audit_log_event_dedupe_idx'::regclass))=0 then
+    raise exception 'Canonical event dedupe index must include entity_id.';
+  end if;
   perform public.release_equipment_borrowing(v_approve,'good');
   perform public.complete_equipment_return(v_approve,'good');
   if (select count(*) from public.phase7_audit_log where entity_id=v_approve::text and actor_id=v_admin and event_type='equipment_released')<>1
@@ -128,7 +142,7 @@ $$;
 
 do $$
 declare v_admin uuid; v_staff uuid; v_custodian uuid; v_result jsonb; v_table text; v_set text; v_trigger text; v_report_type text;
-  v_equipment bigint; v_unit bigint;
+  v_equipment bigint; v_unit bigint; v_asset_tag text; v_expected_back timestamptz;
 begin
   select id into v_admin from public.profiles where role='admin' and account_status='active' order by created_at limit 1;
   select id into v_staff from public.profiles where role='staff' and account_status='active' order by created_at limit 1;
@@ -159,12 +173,22 @@ begin
   insert into public.equipment(asset_code,equipment_name,category_id,quantity,tracking_mode,availability_status)
     values('P7-IMMUTABLE-'||replace(gen_random_uuid()::text,'-',''),'Immutable fixture',
       (select category_id from public.categories order by category_id limit 1),1,'unit','available') returning equipment_id into v_equipment;
+  v_asset_tag:='P7-IMMUTABLE-'||replace(gen_random_uuid()::text,'-','');
   insert into public.equipment_units(equipment_id,asset_tag,status)
-    values(v_equipment,'P7-IMMUTABLE-'||replace(gen_random_uuid()::text,'-',''),'available') returning unit_id into v_unit;
+    values(v_equipment,v_asset_tag,'available',current_date) returning unit_id into v_unit;
   insert into public.equipment_unit_audit(unit_id,equipment_id,actor_id,action,new_values)
     values(v_unit,v_equipment,v_admin,'insert','{"status":"available"}'::jsonb);
-  insert into public.unit_maintenance_log(unit_id,reason,started_at,recorded_by)
-    values(v_unit,'Append-only fixture',now(),v_admin);
+  insert into public.unit_maintenance_log(unit_id,reason,started_at,completed_at,recorded_by)
+    values(v_unit,'Old-style completed maintenance',now()-interval '2 days',now()-interval '1 day',v_admin);
+  if public.phase7_unit_maintenance_is_open((select max(maintenance_id) from public.unit_maintenance_log where unit_id=v_unit)) then
+    raise exception 'An old-style completed maintenance row must not be open.';
+  end if;
+  select expected_back_at into v_expected_back
+  from public.search_equipment_units_page(v_asset_tag,null,0) where unit_id=v_unit;
+  if v_expected_back is not null then raise exception 'The maintenance list treated an old completed row as open.'; end if;
+  if not exists(select 1 from public.equipment_units_due_for_calibration(0) where unit_id=v_unit) then
+    raise exception 'The calibration due list treated an old completed row as active maintenance.';
+  end if;
   v_result:=public.get_phase7_audit_history(0,null,null,null,null,null,true);
   foreach v_table in array array['phase7_audit_log','equipment_audit_log','borrowing_workflow_audit','account_access_audit_log','borrower_agreement_audit_log','equipment_unit_audit','equipment_import_audit','unit_maintenance_log'] loop
     if not exists(select 1 from jsonb_array_elements(v_result->'rows') r where r.value->>'source_table'=v_table) then raise exception 'Audit history union is missing %.',v_table; end if;

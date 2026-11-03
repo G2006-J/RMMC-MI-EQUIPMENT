@@ -109,7 +109,52 @@ alter table public.unit_maintenance_log
   add column closes_maintenance_id bigint references public.unit_maintenance_log(maintenance_id) on delete restrict;
 drop index if exists public.unit_maintenance_one_open_idx;
 create index unit_maintenance_open_lookup_idx on public.unit_maintenance_log (unit_id, maintenance_id desc)
-  where closes_maintenance_id is null;
+  where completed_at is null and closes_maintenance_id is null;
+
+create or replace function public.phase7_unit_maintenance_is_open(p_maintenance_id bigint)
+returns boolean language plpgsql stable security definer set search_path = '' as $$
+declare v_actor uuid := (select auth.uid());
+begin
+  if v_actor is null or not public.is_equipment_manager_user() then
+    raise exception 'Only equipment managers can inspect maintenance history.';
+  end if;
+  return exists (
+    select 1
+    from public.unit_maintenance_log m
+    where m.maintenance_id = p_maintenance_id
+      and m.completed_at is null
+      and m.closes_maintenance_id is null
+      and not exists (
+        select 1 from public.unit_maintenance_log c
+        where c.closes_maintenance_id = m.maintenance_id
+      )
+  );
+end; $$;
+revoke all on function public.phase7_unit_maintenance_is_open(bigint) from public, anon;
+grant execute on function public.phase7_unit_maintenance_is_open(bigint) to authenticated;
+
+create or replace function public.equipment_units_due_for_calibration(p_days integer default 14)
+returns table (unit_id bigint, equipment_id bigint, asset_tag text, calibration_due_at date, status text)
+language plpgsql stable security definer set search_path = '' as $$
+begin
+  if (select auth.uid()) is null or not public.is_equipment_manager_user() then
+    raise exception 'Only administrators and property custodians can view calibration dates.';
+  end if;
+  if p_days < 0 or p_days > 365 then raise exception 'Choose a due window from 0 to 365 days.'; end if;
+  return query
+  select u.unit_id, u.equipment_id, u.asset_tag, u.calibration_due_at, u.status
+  from public.equipment_units u
+  where u.status <> 'retired'
+    and u.calibration_due_at between current_date and current_date + p_days
+    and not exists (
+      select 1 from public.unit_maintenance_log m
+      where m.unit_id = u.unit_id
+        and public.phase7_unit_maintenance_is_open(m.maintenance_id)
+    )
+  order by u.calibration_due_at, u.unit_id;
+end; $$;
+revoke all on function public.equipment_units_due_for_calibration(integer) from public, anon;
+grant execute on function public.equipment_units_due_for_calibration(integer) to authenticated;
 
 create or replace function public.search_equipment_units_page(
   p_search text default null, p_status text default null, p_after_unit_id bigint default 0
@@ -125,8 +170,8 @@ begin
   from public.equipment_units u join public.equipment e using (equipment_id)
   left join lateral (
     select open_row.expected_back_at from public.unit_maintenance_log open_row
-    where open_row.unit_id = u.unit_id and open_row.closes_maintenance_id is null
-      and not exists (select 1 from public.unit_maintenance_log c where c.closes_maintenance_id = open_row.maintenance_id)
+    where open_row.unit_id = u.unit_id
+      and public.phase7_unit_maintenance_is_open(open_row.maintenance_id)
     order by open_row.maintenance_id desc limit 1
   ) m on true
   where u.unit_id > coalesce(p_after_unit_id, 0) and (p_status is null or u.status = p_status)
@@ -163,21 +208,30 @@ begin
       values (p_unit_id, trim(p_reason), coalesce(p_started_at, now()), p_expected_back_at, v_actor);
   elsif v_old_status = 'maintenance' then
     select m.* into v_open from public.unit_maintenance_log m
-    where m.unit_id = p_unit_id and m.closes_maintenance_id is null
-      and not exists (select 1 from public.unit_maintenance_log c where c.closes_maintenance_id = m.maintenance_id)
+    where m.unit_id = p_unit_id
+      and public.phase7_unit_maintenance_is_open(m.maintenance_id)
     order by m.maintenance_id desc limit 1;
     if found then
       insert into public.unit_maintenance_log (unit_id, reason, started_at, expected_back_at, completed_at, recorded_by, closes_maintenance_id)
         values (p_unit_id, 'Maintenance completed', v_open.started_at, v_open.expected_back_at, now(), v_actor, v_open.maintenance_id);
+      update public.equipment set out_of_service_quantity = out_of_service_quantity - 1, updated_at = now() where equipment_id = v_equipment_id;
     end if;
-    update public.equipment set out_of_service_quantity = out_of_service_quantity - 1, updated_at = now() where equipment_id = v_equipment_id;
   end if;
   if p_status = 'retired' then update public.equipment set quantity = quantity - 1, updated_at = now() where equipment_id = v_equipment_id; end if;
   update public.equipment e set availability_status = case
     when e.availability_status = 'retired' then 'retired'
     when e.tracking_mode = 'unit' and e.quantity = 0 then 'retired'
-    when e.tracking_mode = 'unit' and not exists (select 1 from public.equipment_units u where u.equipment_id=e.equipment_id and u.status in ('available','borrowed')) then 'maintenance'
-    when e.tracking_mode = 'unit' and not exists (select 1 from public.equipment_units u where u.equipment_id=e.equipment_id and u.status='available') then 'borrowed'
+    when e.tracking_mode = 'unit' and not exists (select 1 from public.equipment_units u where u.equipment_id=e.equipment_id and u.status='available') then
+      case
+        when exists (select 1 from public.equipment_units u where u.equipment_id=e.equipment_id and u.status='borrowed') then 'borrowed'
+        when exists (
+          select 1 from public.equipment_units u
+          join public.unit_maintenance_log m on m.unit_id = u.unit_id
+          where u.equipment_id=e.equipment_id and u.status='maintenance'
+            and public.phase7_unit_maintenance_is_open(m.maintenance_id)
+        ) then 'maintenance'
+        else 'maintenance'
+      end
     when e.quantity-e.out_of_service_quantity <= 0 then 'maintenance' else 'available' end, updated_at=now()
   where e.equipment_id=v_equipment_id;
   insert into public.equipment_unit_audit (unit_id,equipment_id,actor_id,action,old_values,new_values)
@@ -378,7 +432,7 @@ begin
     union all select a.changed_at,a.actor_id,'agreement_'||a.action,'borrower_agreement_version',a.version_id::text,a.before_values-'body_text',a.after_values-'body_text','legacy','borrower_agreement_audit_log' from public.borrower_agreement_audit_log a
     union all select a.changed_at,a.actor_id,'equipment_unit_'||a.action,'equipment_unit',a.unit_id::text,jsonb_build_object('status',a.old_values->'status'),jsonb_build_object('status',a.new_values->'status'),'legacy','equipment_unit_audit' from public.equipment_unit_audit a
     union all select a.imported_at,a.actor_id,'equipment_csv_import','equipment_import',a.import_id::text,null::jsonb,jsonb_build_object('row_count',a.row_count),'legacy','equipment_import_audit' from public.equipment_import_audit a
-    union all select coalesce(m.completed_at,m.created_at),m.recorded_by,case when m.closes_maintenance_id is null then 'maintenance_started' else 'maintenance_completed' end,'unit_maintenance',coalesce(m.closes_maintenance_id,m.maintenance_id)::text,null::jsonb,jsonb_build_object('maintenance_id',coalesce(m.closes_maintenance_id,m.maintenance_id)),'legacy','unit_maintenance_log' from public.unit_maintenance_log m
+    union all select coalesce(m.completed_at,m.created_at),m.recorded_by,case when m.completed_at is not null or m.closes_maintenance_id is not null then 'maintenance_completed' else 'maintenance_started' end,'unit_maintenance',coalesce(m.closes_maintenance_id,m.maintenance_id)::text,null::jsonb,jsonb_build_object('maintenance_id',coalesce(m.closes_maintenance_id,m.maintenance_id)),'legacy','unit_maintenance_log' from public.unit_maintenance_log m
   ), filtered as (
     select h.* from history h where (p_start_date is null or h.event_time>=p_start_date::timestamptz)
       and (p_end_date is null or h.event_time<(p_end_date+1)::timestamptz)
