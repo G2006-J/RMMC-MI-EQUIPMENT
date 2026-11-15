@@ -1,15 +1,17 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ArrowLeft, ArrowRight, Download, Search } from "lucide-react";
+import { ArrowLeft, ArrowRight, Download, Printer, Search } from "lucide-react";
 import { downloadCsv } from "@/lib/csv.mjs";
 import { formatManilaDateTime } from "@/lib/datetime.mjs";
+import { createReportPrintHtml } from "@/lib/report-print.mjs";
 
 const REPORT_TYPES = [
   { id: "utilization", title: "Utilization", description: "Borrowed unit-days against available unit-days." },
   { id: "most_borrowed", title: "Most borrowed", description: "Top 20 equipment by borrowing count." },
   { id: "overdue", title: "Overdue", description: "Current overdue items grouped by equipment and borrower." },
   { id: "damage_loss", title: "Damage and loss", description: "Reported units grouped by resolution status and equipment." },
+  { id: "return_history", title: "Return history", description: "Recorded return date, time, and condition for each item." },
 ];
 
 function dateValue(date) {
@@ -37,13 +39,21 @@ export function ReportsWorkspace({ supabase }) {
     setLoading(true);
     setError("");
     Promise.all(REPORT_TYPES.map(async (report) => {
-      const { data, error: reportError } = await supabase.rpc("get_phase7_report", {
-        p_report_type: report.id,
-        p_start_date: startDate || null,
-        p_end_date: endDate || null,
-        p_page: pages[report.id] || 0,
-        p_export: false,
-      });
+      const request = report.id === "return_history"
+        ? supabase.rpc("get_phase7_return_history_report", {
+          p_start_date: startDate || null,
+          p_end_date: endDate || null,
+          p_page: pages[report.id] || 0,
+          p_export: false,
+        })
+        : supabase.rpc("get_phase7_report", {
+          p_report_type: report.id,
+          p_start_date: startDate || null,
+          p_end_date: endDate || null,
+          p_page: pages[report.id] || 0,
+          p_export: false,
+        });
+      const { data, error: reportError } = await request;
       if (reportError) throw reportError;
       return [report.id, data];
     })).then((entries) => {
@@ -57,23 +67,57 @@ export function ReportsWorkspace({ supabase }) {
   }, [supabase, startDate, endDate, pages]);
 
   async function exportReport(report) {
-    setExporting(report.id);
     setError("");
     setNotice("");
+    const printWindow = window.open("", "_blank");
+    if (!printWindow) {
+      setError("Allow pop-ups to open the PDF report.");
+      return;
+    }
+    printWindow.opener = null;
+    setExporting(report.id);
     try {
-      const { data, error: exportError } = await supabase.rpc("get_phase7_report", {
-        p_report_type: report.id,
-        p_start_date: startDate || null,
-        p_end_date: endDate || null,
-        p_page: 0,
-        p_export: true,
-      });
+      const request = report.id === "return_history"
+        ? supabase.rpc("get_phase7_return_history_report", {
+          p_start_date: startDate || null,
+          p_end_date: endDate || null,
+          p_page: 0,
+          p_export: true,
+        })
+        : supabase.rpc("get_phase7_report", {
+          p_report_type: report.id,
+          p_start_date: startDate || null,
+          p_end_date: endDate || null,
+          p_page: 0,
+          p_export: true,
+        });
+      const { data, error: exportError } = await request;
       if (exportError) throw exportError;
-      downloadCsv(`rmmc-${report.id}-${startDate}-${endDate}.csv`, [data.headers, ...data.rows]);
+      const rows = data.rows.map((row) => row.map((value, valueIndex) => (
+        report.id === "utilization" && valueIndex === 4
+          ? `${(Number(value || 0) * 100).toFixed(1)}%`
+          : value ?? "—"
+      )));
+      printWindow.document.open();
+      printWindow.document.write(createReportPrintHtml({
+        title: report.title,
+        description: report.description,
+        startDate,
+        endDate,
+        headers: data.headers,
+        rows,
+        truncated: data.truncated,
+      }));
+      printWindow.document.close();
+      printWindow.focus();
+      window.setTimeout(() => {
+        if (!printWindow.closed) printWindow.print();
+      }, 250);
       setNotice(data.truncated
-        ? `Export capped at 5,000 rows. ${data.total_count - 5000} additional rows were not included.`
-        : `${report.title} export downloaded (${data.rows.length} rows).`);
+        ? `PDF print view opened. It includes the first 5,000 rows; ${data.total_count - 5000} additional rows were not included.`
+        : `PDF print view opened for ${report.title} (${rows.length} rows). Choose Save as PDF to download it.`);
     } catch (exportError) {
+      printWindow.close();
       setError(exportError.message || "The report export could not be created.");
     } finally {
       setExporting("");
@@ -101,9 +145,9 @@ export function ReportsWorkspace({ supabase }) {
               <div className="phase7-export-control">
                 <button className="button-secondary" type="button" title="This file contains personal data. Handle it accordingly."
                   onClick={() => exportReport(report)} disabled={loading || Boolean(exporting)}>
-                  <Download size={14} /> {exporting === report.id ? "Preparing…" : "Export CSV"}
+                  <Printer size={14} /> {exporting === report.id ? "Preparing…" : "Save as PDF"}
                 </button>
-                <small>Contains personal data. Handle accordingly.</small>
+                <small>Opens print settings; choose Save as PDF. Contains personal data.</small>
               </div>
             </div>
             {loading && !result ? <p className="phase7-empty">Loading report…</p> : rows.length === 0

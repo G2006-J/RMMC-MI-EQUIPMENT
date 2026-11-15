@@ -433,7 +433,7 @@ function SignIn({ supabase, configError }) {
                 </label>
                 <label className="checkbox-label auth-consent-label">
                   <input type="checkbox" checked={privacyAccepted} onChange={(event) => setPrivacyAccepted(event.target.checked)} />
-                  <span>I have read the <Link href="/privacy" target="_blank" rel="noreferrer">privacy notice</Link> and consent to the described use of my information.</span>
+                  <span>I have read the <Link href="/privacy" target="_blank" rel="noopener noreferrer">privacy notice</Link> and consent to the described use of my information.</span>
                 </label>
               </>
             )}
@@ -1044,7 +1044,7 @@ export default function Home() {
     try {
       const result = await action();
       if (result?.error) throw result.error;
-      setNotice(successMessage);
+      setNotice(result?.notice || successMessage);
       setModal(null);
       await refresh();
       return true;
@@ -1686,6 +1686,14 @@ export default function Home() {
                   );
                 }
               }}
+              onDeleteThread={(thread) => {
+                if (window.confirm(`Permanently delete "${thread.title}" and all of its replies?`)) {
+                  runAction(
+                    () => supabase.from("feedback_threads").delete().eq("id", thread.id).select("id").single(),
+                    "Feedback thread and its replies deleted.",
+                  );
+                }
+              }}
               onStatusChange={(threadId, status) => runAction(
                 () => supabase.from("feedback_threads").update({ status }).eq("id", threadId),
                 "Feedback status updated.",
@@ -1939,6 +1947,8 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
   const [overdueItems, setOverdueItems] = useState([]);
   const [overduePage, setOverduePage] = useState(0);
   const [overdueSearch, setOverdueSearch] = useState("");
+  const [overdueReturnItem, setOverdueReturnItem] = useState(null);
+  const [overdueReturnLoadingId, setOverdueReturnLoadingId] = useState(null);
   const [damageReports, setDamageReports] = useState([]);
   const [returnedHistory, setReturnedHistory] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -2085,6 +2095,43 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
       return { error: null };
     }, successMessage);
     if (completed) setWorkflowRefreshKey((key) => key + 1);
+    return completed;
+  }
+
+  async function openOverdueReturn(overdueItem) {
+    setWorkflowError("");
+    setOverdueReturnItem(null);
+    setOverdueReturnLoadingId(overdueItem.borrowing_id);
+    try {
+      const { data, error } = await supabase.from("borrowings")
+        .select("borrowing_id, transaction_status, borrowing_items(borrowing_item_id, equipment_id, item_status, quantity, is_overdue, equipment(equipment_id, tracking_mode))")
+        .eq("borrowing_id", overdueItem.borrowing_id)
+        .maybeSingle();
+      if (error) throw error;
+      const borrowingItems = data?.borrowing_items || [];
+      const overdueBorrowingItem = borrowingItems.find((item) =>
+        item.borrowing_item_id === overdueItem.borrowing_item_id
+        && item.item_status === "released"
+        && item.is_overdue);
+      if (data?.transaction_status !== "released" || !overdueBorrowingItem) {
+        throw new Error("This overdue item is no longer awaiting return. Refresh the list and try again.");
+      }
+      setOverdueReturnItem({
+        id: data.borrowing_id,
+        unit_items: borrowingItems
+          .filter((item) => item.equipment?.tracking_mode === "unit")
+          .map((item) => ({
+            borrowing_item_id: item.borrowing_item_id,
+            equipment_id: item.equipment_id,
+            item_status: item.item_status,
+            quantity: item.quantity,
+          })),
+      });
+    } catch (actionError) {
+      setWorkflowError(`The overdue item could not be prepared for return: ${getErrorMessage(actionError)}`);
+    } finally {
+      setOverdueReturnLoadingId(null);
+    }
   }
 
   async function resolveReport(reportId, status, notes) {
@@ -2212,17 +2259,43 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
         {workflowError && <p className="reservation-grace-error" role="alert">{workflowError}</p>}
         {!overdueItems.length ? <EmptyState title="No overdue items" copy="Items past their return date will be listed here after the daily overdue check." /> : (
           <div className="table-wrap inventory-table">
-            <table><thead><tr><th>Equipment</th><th>Borrower</th><th>Contact</th><th>Due</th><th>Quantity</th></tr></thead>
+            <table><thead><tr><th>Equipment</th><th>Borrower</th><th>Contact</th><th>Due</th><th>Quantity</th><th>Action</th></tr></thead>
               <tbody>{overdueItems.map((item) => <tr key={item.borrowing_item_id}>
                 <td><strong>{item.equipment_name}</strong><small>{item.asset_code}</small></td>
                 <td><strong>{item.borrower_name}</strong><small>{item.department || "Department not set"}</small></td>
                 <td><a href={`mailto:${encodeURIComponent(item.borrower_email)}`}>{item.borrower_email}</a>{item.borrower_phone && <small>{item.borrower_phone}</small>}</td>
                 <td>{dateTimeLabel(item.expected_return_at)}</td>
                 <td>{item.quantity}</td>
+                <td><button className="button-secondary" type="button" onClick={() => openOverdueReturn(item)} disabled={busy || overdueReturnLoadingId !== null}>{overdueReturnLoadingId === item.borrowing_id ? "Loading..." : "Record return"}</button></td>
               </tr>)}</tbody>
             </table>
           </div>
         )}
+        {overdueReturnItem && <article className="admin-request overdue-return-action">
+          <div className="admin-request-main">
+            <h2>Record overdue return</h2>
+            <p>Confirm the received condition. Damaged or lost returns create a damage/loss report automatically.</p>
+          </div>
+          <WorkflowConditionAction
+            stage="return"
+            busy={busy}
+            supabase={supabase}
+            item={overdueReturnItem}
+            refreshKey={workflowRefreshKey}
+            onSubmit={async (condition, file, notes, assignments) => {
+              const completed = await submitCondition(
+                { ...overdueReturnItem, active_unit_item: assignments[0] },
+                "return",
+                condition,
+                file,
+                notes,
+                assignments,
+              );
+              if (completed) setOverdueReturnItem(null);
+            }}
+          />
+          <button className="button-secondary" type="button" onClick={() => setOverdueReturnItem(null)} disabled={busy}>Cancel</button>
+        </article>}
         <nav className="unit-pagination" aria-label="Overdue item pages"><span>Page {overduePage + 1} · {overdueItems.length} items</span><div><button className="button-secondary" type="button" onClick={() => setOverduePage((page) => Math.max(0, page - 1))} disabled={overduePage === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => setOverduePage((page) => page + 1)} disabled={overdueItems.length < 20}>Next <ArrowRight size={14} /></button></div></nav>
         <div className="section-title"><div><h2>Damage and loss reports</h2><p>Track follow-up and resolution for reported damage or lost items.</p></div><span className="record-count">{damageReports.length} reports</span></div>
         {!damageReports.length ? <EmptyState title="No damage or loss reports" copy="Reports will be created when staff record damaged or lost equipment." /> : (
@@ -2682,7 +2755,7 @@ function CurrentlyBorrowedWorkspace({ rows, categories, loading }) {
   );
 }
 
-function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, busy, onCreate, onReply, onDeleteReply, onStatusChange }) {
+function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, busy, onCreate, onReply, onDeleteReply, onDeleteThread, onStatusChange }) {
   const statusLabels = {
     open: "Open",
     under_review: "Under review",
@@ -2710,7 +2783,10 @@ function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, bus
             <article className="feedback-thread" key={thread.id}>
               <header className="feedback-thread-header">
                 <div><span className={`feedback-category category-${thread.category}`}>{thread.category.replaceAll("_", " ")}</span><span className={`feedback-status status-${thread.status}`}>{statusLabels[thread.status]}</span></div>
-                {canManageFeedback && <label className="feedback-status-control"><span className="sr-only">Update discussion status</span><select value={thread.status} disabled={busy} onChange={(event) => onStatusChange(thread.id, event.target.value)}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
+                <div className="feedback-thread-controls">
+                  {canManageFeedback && <label className="feedback-status-control"><span className="sr-only">Update discussion status</span><select value={thread.status} disabled={busy} onChange={(event) => onStatusChange(thread.id, event.target.value)}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
+                  {isAdmin && <button className="feedback-delete-button" type="button" aria-label={`Delete feedback thread ${thread.title}`} title="Delete thread and replies" disabled={busy} onClick={() => onDeleteThread(thread)}><Trash2 size={14} /></button>}
+                </div>
               </header>
               <h3>{thread.title}</h3>
               <p className="feedback-thread-message">{thread.message}</p>
@@ -2766,9 +2842,30 @@ function MemberTable({ members, currentUserId, busy, runAction, onAnonymize, sup
                   runAction(() => supabase.rpc("admin_deactivate_borrower_account", { p_user_id: member.id }), "Account deactivated.");
                 }
               }}>Deactivate</button>}
-              {member.account_status === "inactive" && member.role === "staff" && <button className="button-danger" type="button" disabled={busy} onClick={() => {
+              {member.account_status === "inactive" && member.role === "staff" && member.email && <button className="button-danger" type="button" disabled={busy} onClick={() => {
                 if (window.prompt(`This permanently anonymizes ${member.display_name || member.email}. Type ANONYMIZE to continue.`) === "ANONYMIZE") onAnonymize(member);
               }}>Anonymize borrower</button>}
+              {member.account_status === "inactive" && <button className="button-danger" type="button" disabled={busy} onClick={() => {
+                const accountLabel = member.display_name || member.email || "this account";
+                const confirmation = window.prompt(
+                  `Permanently delete ${accountLabel}? Their login and profile will be removed. Borrowing and audit history will be retained in anonymized form; feedback, reservations, notifications, and consent records may be removed. Type DELETE to continue.`,
+                );
+                if (confirmation === "DELETE") {
+                  runAction(async () => {
+                    const response = await fetch("/api/admin/permanently-delete-account", {
+                      method: "POST",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ userId: member.id }),
+                    });
+                    const result = await response.json();
+                    if (!response.ok) throw new Error(result.error || "Permanent account deletion failed.");
+                    return {
+                      notice: result.warning
+                        || "Account permanently deleted. Borrowing and audit history were retained.",
+                    };
+                  }, "Account permanently deleted.");
+                }
+              }}>Permanently delete</button>}
             </div></td>
           </tr>
         ))}</tbody>

@@ -27,6 +27,7 @@ declare
   v_set text;
   v_trigger text;
   v_code text := 'P7-' || replace(gen_random_uuid()::text, '-', '');
+  v_returned_at timestamptz := ((v_start + 2)::timestamp + interval '15 hours 4 minutes') at time zone 'Asia/Manila';
 begin
   select p.id into v_admin from public.profiles p join auth.users u on u.id=p.id
     where p.role='admin' and p.account_status='active' and u.email_confirmed_at is not null order by p.created_at limit 1;
@@ -113,12 +114,12 @@ begin
     values(v_code||'-report','Phase 7 report fixture',v_category,2,'available') returning equipment_id into v_equipment;
   insert into public.borrowings(transaction_code,borrower_id,processed_by,purpose,destination,request_date,expected_return_date,transaction_status)
     values(v_code||'-r1',v_unlinked,v_admin,'report','Room 2',v_start,v_start+2,'returned') returning borrowing_id into v_approve;
-  insert into public.borrowing_items(borrowing_id,equipment_id,item_status,quantity,issued_at,returned_at)
-    values(v_approve,v_equipment,'returned',1,v_start,v_start+2) returning borrowing_item_id into v_item;
+  insert into public.borrowing_items(borrowing_id,equipment_id,item_status,quantity,issued_at,returned_at,condition_at_return)
+    values(v_approve,v_equipment,'returned',1,v_start,v_returned_at,'good') returning borrowing_item_id into v_item;
   insert into public.borrowings(transaction_code,borrower_id,processed_by,purpose,destination,request_date,expected_return_date,transaction_status)
     values(v_code||'-r2',v_unlinked,v_admin,'report','Room 2',v_start+1,v_start+3,'returned') returning borrowing_id into v_decline;
-  insert into public.borrowing_items(borrowing_id,equipment_id,item_status,quantity,issued_at,returned_at)
-    values(v_decline,v_equipment,'returned',1,v_start+1,v_start+3);
+  insert into public.borrowing_items(borrowing_id,equipment_id,item_status,quantity,issued_at,returned_at,condition_at_return)
+    values(v_decline,v_equipment,'returned',1,v_start+1,v_start+3,'fair');
   insert into public.damage_loss_reports(borrowing_item_id,reporter_id,report_type,description)
     values(v_item,v_admin,'damage','fixture'),(v_item,v_admin,'loss','fixture');
   v_result:=public.get_phase7_report('utilization',v_start,v_end,0,false);
@@ -127,8 +128,15 @@ begin
   if not exists(select 1 from jsonb_array_elements(v_result->'rows') r where r.value->>0=v_equipment::text and (r.value->>2)::integer=2) then raise exception 'Most-borrowed fixture total is incorrect.'; end if;
   v_result:=public.get_phase7_report('damage_loss',v_start,v_end,0,false);
   if not exists(select 1 from jsonb_array_elements(v_result->'rows') r where r.value->>0=v_equipment::text and (r.value->>3)::integer=1 and (r.value->>4)::integer=1) then raise exception 'Damage/loss fixture totals are incorrect.'; end if;
+  v_result:=public.get_phase7_return_history_report(v_start,v_end,0,false);
+  if not exists(select 1 from jsonb_array_elements(v_result->'rows') r
+    where r.value->>0=v_approve::text and r.value->>5=(v_start+2)::text and r.value->>6='03:04 PM' and r.value->>7='Good') then
+    raise exception 'Return history must report the Manila date, time, and returned condition.';
+  end if;
   v_result:=public.get_phase7_report('utilization',v_start,v_end,0,true);
   if (select count(*) from public.phase7_audit_log where event_type='report_exported' and entity_id='utilization' and actor_id=v_admin and filters->>'start_date'=v_start::text and row_count=jsonb_array_length(v_result->'rows'))<>1 then raise exception 'Report export audit must include actor, filters, and returned row count exactly once.'; end if;
+  v_result:=public.get_phase7_return_history_report(v_start,v_end,0,true);
+  if (select count(*) from public.phase7_audit_log where event_type='report_exported' and entity_id='return_history' and actor_id=v_admin and filters->>'start_date'=v_start::text and row_count=jsonb_array_length(v_result->'rows'))<>1 then raise exception 'Return-history export must be audited with the report period and row count.'; end if;
   v_result:=public.get_phase7_audit_history(0,v_start,v_end,null,null,null,true);
   if (select count(*) from public.phase7_audit_log where event_type='audit_log_exported' and actor_id=v_admin and row_count=jsonb_array_length(v_result->'rows'))<>1 then raise exception 'Audit export must log its actor, filters, and returned row count exactly once.'; end if;
   insert into public.borrowings(transaction_code,borrower_id,processed_by,purpose,destination,request_date,expected_return_date,transaction_status)
@@ -164,6 +172,8 @@ begin
     begin perform public.get_phase7_report(v_report_type,current_date-1,current_date,0,true); raise exception 'Non-admin export unexpectedly succeeded.';
     exception when others then if sqlerrm='Non-admin export unexpectedly succeeded.' then raise; end if; if sqlerrm not like '%Only administrators and property custodians%' then raise; end if; end;
   end loop;
+  begin perform public.get_phase7_return_history_report(current_date-1,current_date,0,false); raise exception 'Non-admin return report unexpectedly succeeded.';
+  exception when others then if sqlerrm='Non-admin return report unexpectedly succeeded.' then raise; end if; if sqlerrm not like '%Only administrators and property custodians%' then raise; end if; end;
   begin perform public.get_phase7_audit_history(0,null,null,null,null,null,true); raise exception 'Non-admin audit export unexpectedly succeeded.';
   exception when others then if sqlerrm='Non-admin audit export unexpectedly succeeded.' then raise; end if; if sqlerrm not like '%Only administrators and property custodians%' then raise; end if; end;
   perform set_config('request.jwt.claim.sub',v_custodian::text,true);
