@@ -17,7 +17,7 @@ jobs:
 
       - name: Install Supabase CLI
         # Replace this tag with an immutable SHA copied from the supabase/setup-cli release page when pinning is required.
-        uses: supabase/setup-cli@v1
+        uses: supabase/setup-cli@v3
         with:
           version: latest
 
