@@ -59,7 +59,7 @@ Password reset emails return to `/reset-password`, where the user can set a new 
 
 ### Security settings and role access
 
-- Apply the security-hardening, borrower-search, and follow-up migrations below to the same Supabase project used by `.env.local`. Database row-level security and security-definer functions enforce access independently of the visible dashboard. `admin` accounts retain full operations access. `property_custodian` accounts can manage equipment and feedback, search and approve/decline borrower and reservation requests, view reports, and edit their own account settings. Member-role administration remains administrator-only.
+- Apply the security-hardening, borrower-search, and follow-up migrations below to the same Supabase project used by `.env.local`, including [`202611150001_role_permissions_and_admin_access.sql`](./supabase/migrations/202611150001_role_permissions_and_admin_access.sql). Database row-level security and security-definer functions enforce access independently of the visible dashboard. `admin` accounts manage the equipment catalog and its images, administer roles and account status, and retain full operations access. `property_custodian` accounts have read access to the catalog and can add or maintain tracked units, approve/decline borrowing and reservation requests, release and receive equipment, manage feedback, view reports, and edit their own account settings; they cannot create, edit, or delete catalog entries or equipment images. `staff` accounts are borrowers: they can browse equipment, submit borrowing or reservation requests, manage their own requests and returns, and edit their own account settings, but cannot administer inventory, other accounts, or staff operations.
 - In **Authentication → Settings**, require email confirmation, configure a minimum password length of at least 8 characters, and set conservative email/OTP and password-reset rate limits. The signup form requires eight characters; Supabase Auth must allow the same minimum. Supabase Auth enforces login/email delivery limits on the server; the app also applies a short resend cooldown. Configure SMTP and CAPTCHA in Supabase Auth for production.
 - Supabase Auth stores password hashes; this app never stores passwords or Supabase auth sessions in `localStorage`. The Supabase SSR client stores the session in cookies and marks them `Secure` in production. Serve production only over HTTPS.
 - The browser uses only the Supabase publishable key. Keep `.env.local` out of source control; `.gitignore` excludes local environment files. Never add a Supabase service-role/secret key to a `NEXT_PUBLIC_*` variable, the browser bundle, or logs.
@@ -92,7 +92,7 @@ set role = 'admin',
 where id = (
   select id
   from auth.users
-  where email = 'your-institutional-email@example.org'
+  where email = 'your-email@example.org'
 );
 
 update public.borrowers
@@ -100,7 +100,7 @@ set status = 'active'
 where user_id = (
   select id
   from auth.users
-  where email = 'your-institutional-email@example.org'
+  where email = 'your-email@example.org'
 );
 ```
 
@@ -144,4 +144,5 @@ Only the `admin` role can add, edit, or remove equipment. Equipment changes are 
 5. Only after comparing and reconciling migration history should you run `supabase db push`. Review the proposed changes and confirm the target project before accepting them.
 #   R M M C - M I - E q u i p m e n t - B o r r o w i n g - S y s t e m 
  
+ #   R M M C - M I - E q u i p m e n t - S y s t e m  
  

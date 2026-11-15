@@ -11,7 +11,7 @@ export default function PrivacyNoticePage() {
         <p className="privacy-placeholder">PLACEHOLDER TEXT, NOT LEGAL WORDING. Your school must replace and approve this notice, retention schedule, and contact information before production use.</p>
 
         <h2>Information collected</h2>
-        <p>The system stores your name, institutional email, department, course, gender (if provided), profile-photo path, account and consent status, equipment requests, borrowing and return details, notifications, and audit events.</p>
+        <p>The system stores your name, email, department, course, gender (if provided), profile-photo path, account and consent status, equipment requests, borrowing and return details, notifications, and audit events.</p>
 
         <h2>Why it is used</h2>
         <p>This information supports account access, equipment requests and approvals, inventory and return tracking, account security, notifications, and operational auditing.</p>

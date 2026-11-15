@@ -37,6 +37,8 @@ import Link from "next/link";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createClient as createAuthClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/client";
+import { DEPARTMENTS } from "@/lib/departments.mjs";
+import { formatManilaDate, formatManilaDateTime } from "@/lib/datetime.mjs";
 import InstallAppButton from "./install-app-button";
 import { AuditLogWorkspace, ReportsWorkspace } from "./phase7-workspaces";
 
@@ -78,14 +80,10 @@ const ACTIVE_BORROWING = ["requested", "approved", "released", "overdue", "retur
 const PRIVACY_NOTICE_VERSION = "2026-11-03-v1";
 
 const dateLabel = (value) =>
-  value
-    ? new Intl.DateTimeFormat("en", { dateStyle: "medium" }).format(new Date(value.length === 10 ? `${value}T00:00:00` : value))
-    : "—";
+  value ? formatManilaDate(value) : "—";
 
 const dateTimeLabel = (value) =>
-  value
-    ? new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value))
-    : "—";
+  value ? formatManilaDateTime(value) : "—";
 
 async function encodeImageToWebp(file, label, maxDimension) {
   if (!(file instanceof File) || file.size === 0) return null;
@@ -378,7 +376,7 @@ function SignIn({ supabase, configError }) {
           <div className="auth-heading">
             <p className="eyebrow">{mode === "signup" ? isCodeSent ? "Verify your email" : "Get started" : mode === "reset" ? "Account recovery" : isCodeSent ? "Check your inbox" : "Welcome back"}</p>
             <h2>{mode === "signup" ? isCodeSent ? "Enter your verification code" : "Create your account" : mode === "reset" ? "Reset your password" : isCodeSent ? "Enter your sign-in code" : "Sign in to your workspace"}</h2>
-            <p>{mode === "signup" ? isCodeSent ? `Enter the verification code sent to ${email}.` : "Use your institutional email to request access. After verifying your email, staff must approve your account before you can borrow equipment." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the verification code sent to ${email} after your password was confirmed.` : "Enter your institutional email and password. We’ll send a verification code after your credentials are confirmed."}</p>
+            <p>{mode === "signup" ? isCodeSent ? `Enter the verification code sent to ${email}.` : "Sign up with your email address. After verifying it, staff must approve your account before you can borrow equipment." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the verification code sent to ${email} after your password was confirmed.` : "Enter your email and password. We’ll send a verification code after your credentials are confirmed."}</p>
           </div>
           <form className="auth-form" onSubmit={submit}>
             {mode === "signup" && !isCodeSent && (
@@ -388,8 +386,8 @@ function SignIn({ supabase, configError }) {
               </label>
             )}
             <label>
-              <span>Institutional email</span>
-              <input type="email" autoComplete="email" autoCapitalize="none" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@rmmc.edu.ph" disabled={isCodeSent && (mode === "signin" || mode === "signup")} required />
+              <span>Email</span>
+              <input type="email" autoComplete="email" autoCapitalize="none" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="you@example.com" disabled={isCodeSent && (mode === "signin" || mode === "signup")} required />
             </label>
             {mode === "signin" && !isCodeSent && (
               <label>
@@ -408,7 +406,10 @@ function SignIn({ supabase, configError }) {
                 <div className="form-row">
                   <label>
                     <span>Department</span>
-                    <input value={department} onChange={(event) => setDepartment(event.target.value)} placeholder="e.g. IT" maxLength={120} required />
+                    <select className="auth-gender-select" value={department} onChange={(event) => setDepartment(event.target.value)} required>
+                      <option value="">Select department</option>
+                      {DEPARTMENTS.map((item) => <option key={item} value={item}>{item}</option>)}
+                    </select>
                   </label>
                   <label>
                     <span>Course</span>
@@ -504,7 +505,7 @@ function EquipmentCard({ item, onBorrow, onReserve, canRequest = true }) {
         <div className="item-meta">
           <span>{item.asset_tag}</span><i /><span>{item.location || "Storage not set"}</span>
         </div>
-        <p className="item-quantity">Available amount: <strong>{item.available_quantity ?? "—"} / {item.quantity}</strong></p>
+        <p className="item-quantity">Quantity: <strong>{item.available_quantity ?? "—"}/{item.quantity ?? 0}</strong></p>
         {item.description && <p className="item-description">{item.description}</p>}
         {canRequest && <div className="card-actions">
           <button className="button-primary" disabled={!canBorrow} onClick={() => onBorrow(item)}>
@@ -1092,9 +1093,16 @@ export default function Home() {
       setError("The current borrower agreement could not be loaded. Please contact an administrator.");
       return;
     }
+    const purposeChoice = String(form.get("purpose") || "").trim();
+    const otherPurpose = String(form.get("purpose_other") || "").trim();
+    const purpose = purposeChoice === "Other" ? otherPurpose : purposeChoice;
+    if (!purpose || purpose.length > 300) {
+      setError("Enter a purpose of 300 characters or fewer.");
+      return;
+    }
     const common = {
       p_equipment_id: modal.item.id,
-      p_purpose: String(form.get("purpose") || "").trim(),
+      p_purpose: purpose,
       p_destination: String(form.get("use_location") || "").trim(),
       p_quantity: Number(form.get("amount")),
     };
@@ -1727,7 +1735,7 @@ export default function Home() {
                 <h2 id="modal-title">{modal.kind === "reservation" ? "Plan ahead" : "Request this equipment"}</h2>
                 <p className="modal-copy"><strong>{modal.item.name}</strong> · {modal.item.asset_tag} — {modal.kind === "reservation" ? "choose the dates you need it reserved." : "tell us when and where you’ll use it."}</p>
                 <form className="modal-form" onSubmit={submitRequest}>
-                  <label><span>Purpose</span><input name="purpose" placeholder="What will you use it for?" required maxLength={300} /></label>
+                  <PurposeField />
                   <label><span>Location of use</span><input name="use_location" placeholder="Room, building, or event venue" required maxLength={200} /></label>
                   <label><span>Amount</span><input name="amount" type="number" min="1" max={modal.kind === "reservation" ? modal.item.quantity : Math.max(1, modal.item.available_quantity || 1)} defaultValue="1" required /><small className="field-hint">{modal.kind === "reservation" ? `${modal.item.quantity} total units in inventory; availability is checked for your selected dates.` : `${modal.item.available_quantity ?? 0} units currently available.`}</small></label>
                   {modal.kind === "reservation" ? <div className="form-row">
@@ -1820,7 +1828,7 @@ function BorrowingList({ rows, onRequestReturn, onCancelRequest, loading, page, 
             <h2>{item.equipment?.name || "Equipment"}</h2>
             <p>{item.equipment?.asset_tag || "—"} <i /> {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} <i /> {item.purpose || "No purpose specified"}</p>
           </div>
-          <div className="loan-date"><span>Expected return</span><strong>{dateTimeLabel(item.expected_return)}</strong><small className={item.expected_return && String(item.expected_return).slice(0, 10) < new Date().toISOString().slice(0, 10) && ACTIVE_BORROWING.includes(item.status) ? "due-soon" : ""}>{item.location_of_use || "Location not set"}</small></div>
+          <div className="loan-date"><span>Expected return</span><strong>{dateTimeLabel(item.expected_return)}</strong><BorrowingReturnTimes borrowingItems={item.borrowing_items} /><small className={item.expected_return && String(item.expected_return).slice(0, 10) < new Date().toISOString().slice(0, 10) && ACTIVE_BORROWING.includes(item.status) ? "due-soon" : ""}>{item.location_of_use || "Location not set"}</small><BorrowingConditionDetails borrowingItems={item.borrowing_items} /></div>
           <div className="loan-actions">
             {item.status === "requested" && <button className="button-secondary" type="button" onClick={() => onCancelRequest(item)}>Cancel request</button>}
             {["released", "overdue"].includes(item.status) && <button className="button-secondary" onClick={() => onRequestReturn(item)}>Request return</button>}
@@ -1829,6 +1837,52 @@ function BorrowingList({ rows, onRequestReturn, onCancelRequest, loading, page, 
         </article>
       ))}
       <nav className="unit-pagination" aria-label="Borrowing history pages"><span>Page {page + 1}</span><div><button className="button-secondary" type="button" onClick={() => onPageChange(Math.max(0, page - 1))} disabled={page === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => onPageChange(page + 1)} disabled={!hasMore}>Next <ArrowRight size={14} /></button></div></nav>
+    </div>
+  );
+}
+
+function PurposeField() {
+  const [selectedPurpose, setSelectedPurpose] = useState("");
+
+  return (
+    <>
+      <label><span>Purpose</span><select name="purpose" value={selectedPurpose} onChange={(event) => setSelectedPurpose(event.target.value)} required>
+        <option value="">Select purpose</option>
+        <option value="Practice">Practice</option>
+        <option value="Class activity">Class activity</option>
+        <option value="Event">Event</option>
+        <option value="Performance">Performance</option>
+        <option value="Other">Other</option>
+      </select></label>
+      {selectedPurpose === "Other" && <label><span>Other purpose</span><input name="purpose_other" placeholder="Describe the purpose" required maxLength={300} /></label>}
+    </>
+  );
+}
+
+function BorrowingReturnTimes({ borrowingItems = [] }) {
+  const returnedItems = borrowingItems.filter((item) => item.returned_at);
+  if (!returnedItems.length) return null;
+  return (
+    <div className="borrowing-return-times">
+      {returnedItems.map((item) => <small key={item.borrowing_item_id}>Actual return{item.equipment?.equipment_name ? ` · ${item.equipment.equipment_name}` : ""}: {dateTimeLabel(item.returned_at)}</small>)}
+    </div>
+  );
+}
+
+function BorrowingConditionDetails({ borrowingItems = [] }) {
+  const itemsWithConditions = borrowingItems.filter((item) => item.condition_at_release || item.condition_at_return);
+  if (!itemsWithConditions.length) return null;
+  return (
+    <div className="borrowing-condition-details">
+      {itemsWithConditions.map((item) => (
+        <small key={item.borrowing_item_id}>
+          {item.equipment?.equipment_name ? `${item.equipment.equipment_name}: ` : ""}
+          {[
+            item.condition_at_release ? `Condition upon release: ${item.condition_at_release}` : "",
+            item.condition_at_return ? `Condition upon return: ${item.condition_at_return}` : "",
+          ].filter(Boolean).join(" · ")}
+        </small>
+      ))}
     </div>
   );
 }
@@ -1851,21 +1905,30 @@ function ReservationList({ rows, loading, admin = false, onCancel }) {
   );
 }
 
-function BorrowingTable({ rows, loading }) {
+function BorrowingTable({ rows, loading, page, hasMore, onPageChange }) {
   if (loading) return <LoadingPanel />;
-  if (!rows.length) return <EmptyState title="No history yet" copy="Completed and active borrowing requests will be listed here." />;
+  if (!rows.length) return <EmptyState title="No returned borrowing history" copy="Completed borrowing requests will appear here after equipment is returned." />;
   return (
-    <div className="table-wrap">
-      <table>
-        <thead><tr><th>Equipment</th><th>Borrower</th><th>Dates</th><th>Status</th></tr></thead>
-        <tbody>{rows.map((item) => <tr key={item.id}>
-          <td><strong>{item.equipment?.name || "Equipment"}</strong><small>{item.equipment?.asset_tag}</small></td>
-          <td>{item.borrower_email || "Member"}</td>
-          <td><strong>{dateLabel(item.start_date)} – {dateLabel(item.expected_return)}</strong><small>{item.location_of_use || item.purpose}</small></td>
-          <td><StatusPill value={item.status} /></td>
-        </tr>)}</tbody>
-      </table>
-    </div>
+    <>
+      <div className="table-wrap">
+        <table>
+          <thead><tr><th>Equipment</th><th>Borrower</th><th>Dates</th><th>Status</th></tr></thead>
+          <tbody>{rows.map((item) => <tr key={item.id}>
+            <td><strong>{item.equipment?.name || "Equipment"}</strong><small>{item.equipment?.asset_tag}</small><BorrowingConditionDetails borrowingItems={item.borrowing_items} /></td>
+            <td><strong>{item.borrower_name || "Member"}</strong><small>{item.borrower_email}</small></td>
+            <td><strong>{dateLabel(item.start_date)} – {dateTimeLabel(item.expected_return)}</strong><BorrowingReturnTimes borrowingItems={item.borrowing_items} /><small>{item.location_of_use || item.purpose}</small></td>
+            <td><StatusPill value={item.status} /></td>
+          </tr>)}</tbody>
+        </table>
+      </div>
+      <nav className="unit-pagination" aria-label="Returned borrowing history pages">
+        <span>Page {page + 1}</span>
+        <div>
+          <button className="button-secondary" type="button" onClick={() => onPageChange(Math.max(0, page - 1))} disabled={page === 0}><ArrowLeft size={14} /> Previous</button>
+          <button className="button-secondary" type="button" onClick={() => onPageChange(page + 1)} disabled={!hasMore}>Next <ArrowRight size={14} /></button>
+        </div>
+      </nav>
+    </>
   );
 }
 
@@ -1877,6 +1940,10 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
   const [overduePage, setOverduePage] = useState(0);
   const [overdueSearch, setOverdueSearch] = useState("");
   const [damageReports, setDamageReports] = useState([]);
+  const [returnedHistory, setReturnedHistory] = useState([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [historyPage, setHistoryPage] = useState(0);
+  const [historyHasMore, setHistoryHasMore] = useState(false);
   const [workflowRefreshKey, setWorkflowRefreshKey] = useState(0);
   const query = borrowerSearch.trim().toLocaleLowerCase();
   const matchesBorrower = (name, email) => !query
@@ -1886,13 +1953,19 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
     if (!canReview) return undefined;
     let active = true;
     async function loadOperationalData() {
-      const [settingsResult, overdueResult, reportResult] = await Promise.all([
+      setHistoryLoading(true);
+      const [settingsResult, overdueResult, reportResult, historyResult] = await Promise.all([
         supabase.from("reservation_settings")
           .select("pickup_grace_period_minutes")
           .eq("singleton", true)
           .single(),
         supabase.rpc("list_overdue_borrowings_page", { p_page: overduePage, p_search: overdueSearch.trim() || null }),
         supabase.rpc("list_damage_loss_reports"),
+        supabase.from("borrowings")
+          .select("borrowing_id, request_date, expected_return_date, destination, purpose, transaction_status, created_at, borrowers(first_name, middle_name, last_name, email), borrowing_items(borrowing_item_id, quantity, returned_at, condition_at_release, condition_at_return, equipment(equipment_name, asset_code))")
+          .eq("transaction_status", "returned")
+          .order("created_at", { ascending: false })
+          .range(historyPage * 20, historyPage * 20 + 19),
       ]);
       if (!active) return;
       if (settingsResult.error) {
@@ -1915,11 +1988,39 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
       } else {
         setDamageReports(reportResult.data || []);
       }
+      if (historyResult.error) {
+        errors.push(`Returned borrowing history could not be loaded: ${getErrorMessage(historyResult.error)}`);
+        setReturnedHistory([]);
+        setHistoryHasMore(false);
+      } else {
+        const historyRows = historyResult.data || [];
+        setHistoryHasMore(historyRows.length === 20);
+        setReturnedHistory(historyRows.map((item) => {
+          const borrower = item.borrowers || {};
+          const borrowingItems = item.borrowing_items || [];
+          return {
+            id: item.borrowing_id,
+            start_date: item.request_date,
+            expected_return: item.expected_return_date,
+            location_of_use: item.destination,
+            purpose: item.purpose,
+            status: item.transaction_status,
+            borrower_name: [borrower.first_name, borrower.middle_name, borrower.last_name].filter(Boolean).join(" "),
+            borrower_email: borrower.email || "",
+            equipment: {
+              name: borrowingItems.map((detail) => detail.equipment?.equipment_name).filter(Boolean).join(", ") || "Equipment",
+              asset_tag: borrowingItems.map((detail) => detail.equipment?.asset_code).filter(Boolean).join(", "),
+            },
+            borrowing_items: borrowingItems,
+          };
+        }));
+      }
+      setHistoryLoading(false);
       setWorkflowError(errors.join(" "));
     }
     loadOperationalData();
     return () => { active = false; };
-  }, [canReview, supabase, workflowRefreshKey, overduePage, overdueSearch]);
+  }, [canReview, supabase, workflowRefreshKey, overduePage, overdueSearch, historyPage]);
 
   async function savePickupGracePeriod(event) {
     event.preventDefault();
@@ -2092,7 +2193,7 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
           {releasedBorrowings.map((item) => (
             <article className="admin-request" key={item.id}>
               <div className="loan-art"><Laptop size={23} /></div>
-              <div className="admin-request-main"><div className="loan-card-heading"><span className="card-category">{item.equipment?.asset_tag}</span><StatusPill value={item.status} /></div><h2>{item.equipment?.name || "Equipment"}</h2><p>{item.borrower_name} · {item.borrower_email} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose}</p><small>Due {dateTimeLabel(item.expected_return)} · {item.location_of_use}{item.status === "return_requested" ? " · Return requested" : ""}</small></div>
+              <div className="admin-request-main"><div className="loan-card-heading"><span className="card-category">{item.equipment?.asset_tag}</span><StatusPill value={item.status} /></div><h2>{item.equipment?.name || "Equipment"}</h2><p>{item.borrower_name} · {item.borrower_email} · {item.quantity || 1} {Number(item.quantity || 1) === 1 ? "item" : "items"} · {item.purpose}</p><small>Due {dateTimeLabel(item.expected_return)} · {item.location_of_use}{item.status === "return_requested" ? " · Return requested" : ""}</small><BorrowingConditionDetails borrowingItems={item.borrowing_items} /></div>
               {canReview && <WorkflowConditionAction
                 stage="return"
                 busy={busy}
@@ -2177,6 +2278,10 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
           ))}
         </div>
       )}
+      {canReview && <>
+        <div className="section-title"><div><h2>Borrowing history</h2><p>Compare the expected return with the actual return time and recorded item conditions.</p></div></div>
+        <BorrowingTable rows={returnedHistory} loading={historyLoading} page={historyPage} hasMore={historyHasMore} onPageChange={setHistoryPage} />
+      </>}
     </>
   );
 }
@@ -2497,9 +2602,13 @@ function AccountSettings({ profile, user, busy, onSave }) {
           <label><span>First name</span><input name="first_name" defaultValue={profile?.first_name?.trim() || profile?.display_name?.trim().split(/\s+/)[0] || ""} autoComplete="given-name" required maxLength={60} /></label>
           <label><span>Last name</span><input name="last_name" defaultValue={profile?.last_name?.trim() || profile?.display_name?.trim().split(/\s+/).slice(1).join(" ") || ""} autoComplete="family-name" required maxLength={60} /></label>
         </div>
-        <label><span>Email address</span><input value={user.email || ""} readOnly /></label>
+        <label><span>Email</span><input value={user.email || ""} readOnly /></label>
         <div className="form-row">
-          <label><span>Department</span><input name="department" defaultValue={profile?.department || ""} maxLength={120} placeholder="Your department" required /></label>
+          <label><span>Department</span><select name="department" defaultValue={profile?.department || ""} required>
+            {!DEPARTMENTS.includes(profile?.department) && profile?.department && <option value={profile.department}>{profile.department}</option>}
+            {!profile?.department && <option value="">Select department</option>}
+            {DEPARTMENTS.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select></label>
           <label><span>Course</span><input name="course" defaultValue={profile?.course || ""} maxLength={120} placeholder="Your course" required /></label>
         </div>
         <label><span>Gender</span><select name="gender" defaultValue={profile?.gender || ""} required><option value="">Select gender</option><option value="Female">Female</option><option value="Male">Male</option><option value="Non-binary">Non-binary</option><option value="Prefer not to say">Prefer not to say</option><option value="Other">Other</option></select></label>

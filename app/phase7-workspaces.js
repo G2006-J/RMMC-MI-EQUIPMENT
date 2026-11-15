@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { ArrowLeft, ArrowRight, Download, Search } from "lucide-react";
 import { downloadCsv } from "@/lib/csv.mjs";
+import { formatManilaDateTime } from "@/lib/datetime.mjs";
 
 const REPORT_TYPES = [
   { id: "utilization", title: "Utilization", description: "Borrowed unit-days against available unit-days." },
@@ -190,7 +191,7 @@ export function AuditLogWorkspace({ supabase, isAdmin }) {
       });
       if (exportError) throw exportError;
       const rows = data.rows || [];
-      const values = rows.map((row) => [row.event_time, row.actor_id, row.event_type, row.entity_type,
+      const values = rows.map((row) => [formatManilaDateTime(row.event_time), row.actor_id, row.event_type, row.entity_type,
         row.entity_id, row.source_table || row.source, JSON.stringify(row.before_values), JSON.stringify(row.after_values)]);
       downloadCsv("rmmc-audit-history.csv", [AUDIT_HEADERS, ...values]);
       setNotice(data.truncated
@@ -232,7 +233,7 @@ export function AuditLogWorkspace({ supabase, isAdmin }) {
             <div className="audit-entry-main">
               <strong>{row.event_type?.replaceAll("_", " ")}</strong>
               <p>{row.entity_type} · {row.entity_id || "—"} · {row.source_table || row.source}</p>
-              <small>{new Date(row.event_time).toLocaleString()} · Actor {row.actor_id || "unknown"}</small>
+              <small>{formatManilaDateTime(row.event_time)} · Actor {row.actor_id || "unknown"}</small>
               {(row.before_values || row.after_values) && <details>
                 <summary>Show recorded values</summary>
                 <div className="audit-values">
