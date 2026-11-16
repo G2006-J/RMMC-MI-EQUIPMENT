@@ -13,6 +13,11 @@ const localTimestamp = () => {
   return date.toISOString().slice(0, 16);
 };
 
+function reportError(setMessage, context, error, message = "The requested change could not be completed. Please try again.") {
+  console.error(context, error);
+  setMessage(message);
+}
+
 export default function EquipmentUnitsPage() {
   const [supabase, setSupabase] = useState(null);
   const [units, setUnits] = useState([]);
@@ -42,7 +47,7 @@ export default function EquipmentUnitsPage() {
     try {
       setSupabase(createClient());
     } catch (clientError) {
-      setError(clientError.message);
+      reportError(setError, "Equipment units could not be initialized:", clientError, "Equipment units are unavailable right now.");
     }
   }, []);
 
@@ -56,7 +61,7 @@ export default function EquipmentUnitsPage() {
     }).then(({ data, error: resultError }) => {
       if (!active) return;
       if (resultError) {
-        setError(resultError.message);
+        reportError(setError, "Equipment units could not be loaded:", resultError, "Equipment units are unavailable right now.");
         setUnits([]);
       } else {
         setUnits(data || []);
@@ -76,7 +81,7 @@ export default function EquipmentUnitsPage() {
       p_after_id: null,
     }).then(({ data, error: resultError }) => {
       if (!active) return;
-      if (resultError) setError(resultError.message);
+      if (resultError) reportError(setError, "Equipment options could not be loaded:", resultError, "Equipment options are unavailable right now.");
       else setEquipmentCandidates((data || []).filter((equipment) => equipment.tracking_mode === "quantity"));
     });
     return () => { active = false; };
@@ -138,7 +143,7 @@ export default function EquipmentUnitsPage() {
       setNotice(`Unit ${unit.asset_tag} marked ${nextStatus.replaceAll("_", " ")}.`);
       setRefreshKey((key) => key + 1);
     } catch (actionError) {
-      setError(actionError.message);
+      reportError(setError, "The equipment unit status could not be saved:", actionError);
     } finally {
       setBusy(false);
     }
@@ -157,7 +162,7 @@ export default function EquipmentUnitsPage() {
       setNotice(`Calibration date saved for ${unit.asset_tag}.`);
       setRefreshKey((key) => key + 1);
     } catch (actionError) {
-      setError(actionError.message);
+      reportError(setError, "The calibration date could not be saved:", actionError);
     } finally {
       setBusy(false);
     }
@@ -181,7 +186,7 @@ export default function EquipmentUnitsPage() {
       transformHeader: (header) => header.trim().toLowerCase(),
       complete: (result) => {
         if (result.errors.length) {
-          setError(`CSV parsing failed on line ${result.errors[0].row + 2}: ${result.errors[0].message}`);
+          setError(`The CSV file could not be read near line ${result.errors[0].row + 2}. Check its format and try again.`);
           return;
         }
         if (result.data.length > 500) {
@@ -209,7 +214,7 @@ export default function EquipmentUnitsPage() {
       setImportResults(data?.rows || []);
       setNotice(data?.ok ? `${importRows.length} rows passed validation.` : "Review the row errors before importing.");
     } catch (actionError) {
-      setError(actionError.message);
+      reportError(setError, "The equipment import preview could not be created:", actionError);
     } finally {
       setBusy(false);
     }
@@ -228,7 +233,7 @@ export default function EquipmentUnitsPage() {
     }
     const result = Papa.parse(conversionText, { skipEmptyLines: true });
     if (result.errors.length) {
-      setConversionError(`Could not parse unit list: ${result.errors[0].message}`);
+      setConversionError(`The unit list could not be read near line ${result.errors[0].row + 1}. Check its format and try again.`);
       return;
     }
     if (result.data.length > 10000) {
@@ -269,7 +274,7 @@ export default function EquipmentUnitsPage() {
       setConversionEquipmentId("");
       setRefreshKey((key) => key + 1);
     } catch (actionError) {
-      setConversionError(actionError.message);
+      reportError(setConversionError, "The equipment could not be converted to unit tracking:", actionError);
     } finally {
       setBusy(false);
     }
@@ -296,19 +301,23 @@ export default function EquipmentUnitsPage() {
       setImportFileName("");
       setRefreshKey((key) => key + 1);
     } catch (actionError) {
-      setError(actionError.message);
+      reportError(setError, "The equipment import could not be completed:", actionError);
     } finally {
       setBusy(false);
     }
   }
 
   async function downloadTemplate() {
-    const { data, error: templateError } = await supabase.rpc("get_equipment_csv_template");
-    if (templateError) {
-      setError(templateError.message);
-      return;
+    try {
+      const { data, error: templateError } = await supabase.rpc("get_equipment_csv_template");
+      if (templateError) {
+        reportError(setError, "The equipment import template could not be loaded:", templateError, "The import template is unavailable right now.");
+        return;
+      }
+      downloadCsv("equipment-units-template.csv", [data.headers, ...data.rows]);
+    } catch (templateError) {
+      reportError(setError, "The equipment import template could not be loaded:", templateError, "The import template is unavailable right now.");
     }
-    downloadCsv("equipment-units-template.csv", [data.headers, ...data.rows]);
   }
 
   function printLabels() {

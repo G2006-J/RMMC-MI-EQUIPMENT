@@ -17,7 +17,7 @@ export default function PrivacyNoticePage() {
         <p>This information supports account access, equipment requests and approvals, inventory and return tracking, account security, notifications, and operational auditing.</p>
 
         <h2>Who can see it</h2>
-        <p>You can see information associated with your own account. Administrators and property custodians can access account and equipment records needed for their duties; staff can access borrower and transaction details needed to manage requests. Supabase provides the database, authentication, and file storage services configured for this project.</p>
+        <p>You can see information associated with your own account. Administrators and property custodians can access account, borrower, and equipment records needed for their duties. Supabase provides the database, authentication, and file storage services configured for this project.</p>
 
         <h2>How long it is kept</h2>
         <p>PLACEHOLDER RETENTION SCHEDULE: read notifications are automatically deleted after 90 days. Account, borrowing, and audit records do not currently have an automatic deletion schedule; the school must define and publish their retention periods.</p>

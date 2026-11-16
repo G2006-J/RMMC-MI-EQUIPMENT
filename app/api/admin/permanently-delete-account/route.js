@@ -30,10 +30,10 @@ export async function POST(request) {
   const publishableKey = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   if (!url || !publishableKey) {
-    return errorResponse("Supabase is not configured on the server.", 503);
+    return errorResponse("Account deletion is unavailable right now. Please try again later.", 503);
   }
   if (!serviceRoleKey) {
-    return errorResponse("Permanent deletion requires the server-side SUPABASE_SERVICE_ROLE_KEY.", 503);
+    return errorResponse("Account deletion is unavailable right now. Please try again later.", 503);
   }
 
   const cookieStore = await cookies();
@@ -157,7 +157,8 @@ export async function POST(request) {
       { p_user_id: targetId },
     );
     if (anonymizeError) {
-      return errorResponse(`Personal data could not be anonymized, so the account was not deleted: ${anonymizeError.message}`, 409);
+      console.error("Borrower account anonymization failed:", anonymizeError);
+      return errorResponse("Personal data could not be anonymized, so the account was not deleted.", 409);
     }
     if (anonymizedPhotoPath && !photoPaths.includes(anonymizedPhotoPath)) {
       if (!anonymizedPhotoPath.startsWith(`${targetId}/`)) {

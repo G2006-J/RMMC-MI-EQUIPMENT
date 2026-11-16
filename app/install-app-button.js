@@ -58,7 +58,8 @@ export default function InstallAppButton() {
       const choice = await installPrompt.userChoice;
       if (choice.outcome === "accepted") setIsInstalled(true);
     } catch (error) {
-      setInstallError(error instanceof Error ? error.message : "The app could not be installed. Please try again.");
+      console.error("The app could not be installed:", error);
+      setInstallError("The app could not be installed. Please try again.");
     } finally {
       pendingInstallPrompt = null;
       setInstallPrompt(null);

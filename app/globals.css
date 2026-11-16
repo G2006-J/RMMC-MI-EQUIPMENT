@@ -111,7 +111,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .nav-item { width: 100%; min-height: 45px; margin: 3px 0; padding: 0 12px; display: flex; align-items: center; gap: 12px; border: 0; border-radius: 9px; color: #aebeb6; background: transparent; text-align: left; font-size: 12px; font-weight: 500; transition: .2s; }
 .nav-item:hover { color: white; background: #1a4567; }
 .nav-item.active { color: #10324d; background: var(--sky); font-weight: 700; }
-.nav-badge { min-width: 20px; height: 20px; margin-left: auto; display: grid; place-items: center; border-radius: 50%; color: #b6e5f7; background: #24506f; font-size: 10px; font-style: normal; }
+.nav-badge { min-width: 20px; height: 20px; margin-left: auto; padding: 0 5px; display: grid; place-items: center; border-radius: 999px; color: #b6e5f7; background: #24506f; font-size: 10px; font-style: normal; }
 .nav-item.active .nav-badge { color: white; background: #24506f; }
 .sidebar-spacer { flex: 1; min-height: 20px; }
 .help-card { padding: 16px; border: 1px solid #315572; border-radius: 13px; background: var(--blue-900); }
@@ -219,6 +219,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .metric-green { color: #507334; background: #edf3e5; }.metric-amber { color: #9a7035; background: #fbf2e5; }.metric-rose { color: #a45f4b; background: #fbefeb; }.metric-blue { color: #58728a; background: #edf2f6; }
 .metric-card > strong { display: block; margin: 12px 0 4px; color: #24342b; font: 800 27px "Manrope", sans-serif; letter-spacing: -.8px; }
 .metric-card > small { color: #939c96; font-size: 9px; }
+.overview-report-grid { margin-top: 17px; display: grid; grid-template-columns: repeat(auto-fit, minmax(155px, 1fr)); gap: 14px; }
+.overview-borrower-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .section-title { margin: 31px 1px 13px; display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; }
 .section-title h2 { margin: 0; color: #27382e; font: 700 15px "Manrope", sans-serif; letter-spacing: -.2px; }
 .section-title p { margin: 5px 0 0; color: #8a948d; font-size: 10px; }
@@ -682,6 +684,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .phase7-section-heading p { margin: 5px 0 0; color: #7d8781; font-size: 10px; line-height: 1.5; }
 .phase7-export-control { display: grid; justify-items: end; gap: 5px; }
 .phase7-export-control small { max-width: 220px; color: #8a6650; font-size: 9px; text-align: right; }
+.report-tabs { display: flex; gap: 7px; overflow-x: auto; padding-bottom: 2px; }
+.report-tabs button { flex: 0 0 auto; padding: 9px 13px; border: 1px solid #dfe4de; border-radius: 8px; color: #66736a; background: white; font-size: 10px; font-weight: 700; }
+.report-tabs button.active { border-color: #315d78; color: white; background: #315d78; }
 .report-date-toolbar, .phase7-audit-filters { display: flex; align-items: end; flex-wrap: wrap; gap: 12px; }
 .report-date-toolbar label, .phase7-audit-filters > label { min-width: 150px; display: grid; gap: 5px; color: #647168; font-size: 9px; font-weight: 700; }
 .report-date-toolbar input, .phase7-audit-filters input:not(.search-box input) { min-height: 38px; padding: 0 9px; border: 1px solid #dfe4de; border-radius: 7px; color: #314238; background: white; font-size: 10px; }

@@ -40,7 +40,7 @@ import { createClient } from "@/lib/supabase/client";
 import { DEPARTMENTS } from "@/lib/departments.mjs";
 import { formatManilaDate, formatManilaDateTime } from "@/lib/datetime.mjs";
 import InstallAppButton from "./install-app-button";
-import { AuditLogWorkspace, ReportsWorkspace } from "./phase7-workspaces";
+import { AuditLogWorkspace, OverviewStatistics, ReportsWorkspace } from "./phase7-workspaces";
 
 const MEMBER_NAV_ITEMS = [
   { id: "equipment", label: "Equipment", icon: Package },
@@ -146,10 +146,15 @@ function ProfileAvatar({ name, photoUrl, className = "avatar" }) {
 const getErrorMessage = (error) => {
   const message = error?.message || "Something went wrong. Please try again.";
   if (/email rate limit exceeded|too many requests/i.test(message)) {
-    return "Supabase has temporarily limited email delivery. Wait before requesting another email. If this continues, ask your administrator to configure SMTP in Supabase Auth settings.";
+    return "Email delivery is temporarily limited. Please try again later.";
   }
   if (/error sending confirmation email|error sending.*email/i.test(message)) {
-    return "Supabase could not send the confirmation email. Check Authentication → Email → SMTP Settings and the email provider's delivery logs, then try again later.";
+    return "The confirmation email could not be sent. Please try again later.";
+  }
+  if (error?.details || error?.hint || /^[0-9A-Z]{5}$/i.test(error?.code || "")
+    || /permission denied|violates .*constraint|row-level security|relation .* does not exist|column .* does not exist|schema cache|could not find the .* function|function .* does not exist|sqlstate|postgres|database error|failed to fetch|fetch failed|pgrst/i.test(message)) {
+    console.error("A backend operation failed:", error);
+    return "The action could not be completed. Please try again.";
   }
   return message;
 };
@@ -376,7 +381,7 @@ function SignIn({ supabase, configError }) {
           <div className="auth-heading">
             <p className="eyebrow">{mode === "signup" ? isCodeSent ? "Verify your email" : "Get started" : mode === "reset" ? "Account recovery" : isCodeSent ? "Check your inbox" : "Welcome back"}</p>
             <h2>{mode === "signup" ? isCodeSent ? "Enter your verification code" : "Create your account" : mode === "reset" ? "Reset your password" : isCodeSent ? "Enter your sign-in code" : "Sign in to your workspace"}</h2>
-            <p>{mode === "signup" ? isCodeSent ? `Enter the verification code sent to ${email}.` : "Sign up with your email address. After verifying it, staff must approve your account before you can borrow equipment." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the verification code sent to ${email} after your password was confirmed.` : "Enter your email and password. We’ll send a verification code after your credentials are confirmed."}</p>
+            <p>{mode === "signup" ? isCodeSent ? `Enter the verification code sent to ${email}.` : "Sign up with your email address. After verifying it, an administrator or property custodian must approve your account before you can borrow equipment." : mode === "reset" ? "We’ll email you a secure password reset link." : isCodeSent ? `Enter the verification code sent to ${email} after your password was confirmed.` : "Enter your email and password. We’ll send a verification code after your credentials are confirmed."}</p>
           </div>
           <form className="auth-form" onSubmit={submit}>
             {mode === "signup" && !isCodeSent && (
@@ -534,9 +539,6 @@ export default function Home() {
   const [reservations, setReservations] = useState([]);
   const [members, setMembers] = useState([]);
   const [pendingAccounts, setPendingAccounts] = useState([]);
-  const [equipmentAudit, setEquipmentAudit] = useState([]);
-  const [auditPage, setAuditPage] = useState(0);
-  const [auditSearch, setAuditSearch] = useState("");
   const [feedbackThreads, setFeedbackThreads] = useState([]);
   const [notifications, setNotifications] = useState([]);
   const [notificationsPage, setNotificationsPage] = useState(0);
@@ -544,6 +546,7 @@ export default function Home() {
   const [borrowingsPage, setBorrowingsPage] = useState(0);
   const [borrowingsSearch, setBorrowingsSearch] = useState("");
   const [unreadNotificationCount, setUnreadNotificationCount] = useState(0);
+  const [pendingRequestCount, setPendingRequestCount] = useState(0);
   const [notificationOpen, setNotificationOpen] = useState(false);
   const [activeAgreement, setActiveAgreement] = useState(null);
   const [acceptedAgreementVersion, setAcceptedAgreementVersion] = useState(null);
@@ -566,7 +569,8 @@ export default function Home() {
     try {
       setSupabase(createClient());
     } catch (clientError) {
-      setConfigError(getErrorMessage(clientError));
+      console.error("The Supabase client could not be initialized:", clientError);
+      setConfigError("The sign-in service is unavailable right now. Please try again later.");
       setLoading(false);
     }
   }, []);
@@ -589,17 +593,18 @@ export default function Home() {
       setReservations([]);
       setMembers([]);
       setPendingAccounts([]);
-      setEquipmentAudit([]);
       setFeedbackThreads([]);
       setNotifications([]);
       setUnreadNotificationCount(0);
       setActiveAgreement(null);
       setAcceptedAgreementVersion(null);
       setBorrowerId(null);
+      if (profileResult.error) console.error("The profile could not be loaded:", profileResult.error);
+      if (stateResult?.error) console.error("The account state could not be verified:", stateResult.error);
       setError(profileResult.error
-        ? `Your profile role could not be loaded: ${profileResult.error.message}`
+        ? "Your account information could not be loaded. Please try again."
         : stateResult?.error
-          ? `Your account state could not be verified: ${stateResult.error.message}`
+          ? "Your account information could not be verified. Please try again."
           : accountState === "none"
             ? "No profile was found for the signed-in account."
             : accountState === "active"
@@ -625,7 +630,9 @@ export default function Home() {
         client.from("notifications").select("notification_id", { count: "exact", head: true }).eq("is_read", false),
       ]);
       if (inactiveNotificationsResult.error || inactiveUnreadResult.error) {
-        setError(`Account notifications could not be loaded: ${inactiveNotificationsResult.error?.message || inactiveUnreadResult.error?.message}`);
+        if (inactiveNotificationsResult.error) console.error("Account notifications could not be loaded:", inactiveNotificationsResult.error);
+        if (inactiveUnreadResult.error) console.error("The unread notification count could not be loaded:", inactiveUnreadResult.error);
+        setError("Notifications are unavailable right now.");
       } else {
         setNotifications(inactiveNotificationsResult.data || []);
         setUnreadNotificationCount(inactiveUnreadResult.count || 0);
@@ -639,7 +646,6 @@ export default function Home() {
       setAcceptedAgreementVersion(null);
       setMembers([]);
       setPendingAccounts([]);
-      setEquipmentAudit([]);
       setFeedbackThreads([]);
       setBorrowerId(null);
       setLoading(false);
@@ -712,26 +718,27 @@ export default function Home() {
     ]);
 
     const errors = [];
+    let borrowerMissing = false;
     if (notificationsResult.error) {
-      errors.push(`Notifications could not be loaded: ${notificationsResult.error.message}`);
+      errors.push(["Notifications could not be loaded:", notificationsResult.error]);
       setNotifications([]);
     } else {
       setNotifications(notificationsResult.data || []);
     }
     if (unreadNotificationsResult.error) {
-      errors.push(`Unread notification count could not be loaded: ${unreadNotificationsResult.error.message}`);
+      errors.push(["The unread notification count could not be loaded:", unreadNotificationsResult.error]);
       setUnreadNotificationCount(0);
     } else {
       setUnreadNotificationCount(unreadNotificationsResult.count || 0);
     }
     if (activeAgreementResult.error) {
-      errors.push(`Borrower agreement could not be loaded: ${activeAgreementResult.error.message}`);
+      errors.push(["The borrower agreement could not be loaded:", activeAgreementResult.error]);
       setActiveAgreement(null);
     } else {
       setActiveAgreement(activeAgreementResult.data || null);
     }
     if (agreementAcceptancesResult.error) {
-      errors.push(`Agreement acceptance could not be loaded: ${agreementAcceptancesResult.error.message}`);
+      errors.push(["Agreement acceptance could not be loaded:", agreementAcceptancesResult.error]);
       setAcceptedAgreementVersion(null);
     } else {
       setAcceptedAgreementVersion(
@@ -742,13 +749,13 @@ export default function Home() {
       );
     }
     if (currentlyBorrowedResult.error) {
-      errors.push(`Equipment tracking records could not be loaded: ${currentlyBorrowedResult.error.message}`);
+      errors.push(["Equipment tracking records could not be loaded:", currentlyBorrowedResult.error]);
       setCurrentlyBorrowed([]);
     }
     const trackingRows = isEquipmentManager && !currentlyBorrowedResult.error
       ? currentlyBorrowedResult.data || []
       : [];
-    if (unitTagsResult.error) errors.push(`Assigned unit tags could not be loaded: ${unitTagsResult.error.message}`);
+    if (unitTagsResult.error) errors.push(["Assigned unit tags could not be loaded:", unitTagsResult.error]);
     setCurrentUnitTags(unitTagsResult.data || []);
     const photoPaths = [...new Set([
       currentProfile.profile_photo_path,
@@ -758,7 +765,7 @@ export default function Home() {
     if (photoPaths.length) {
       const signedPhotosResult = await client.storage.from("profile-photos").createSignedUrls(photoPaths, 3600);
       if (signedPhotosResult.error) {
-        errors.push(`Profile photos could not be loaded: ${signedPhotosResult.error.message}`);
+        errors.push(["Profile photos could not be loaded:", signedPhotosResult.error]);
       } else {
         signedPhotosByPath = new Map((signedPhotosResult.data || [])
           .filter((item) => item.signedUrl)
@@ -774,7 +781,7 @@ export default function Home() {
       profile_photo_url: signedPhotosByPath.get(item.profile_photo_path) || null,
     })));
     if (equipmentResult.error) {
-      errors.push(`Equipment could not be loaded: ${equipmentResult.error.message}`);
+      errors.push(["Equipment could not be loaded:", equipmentResult.error]);
     } else {
       setEquipmentTotalCount(equipmentResult.data?.[0]?.total_count || 0);
       setEquipment((equipmentResult.data || []).map((item) => ({
@@ -790,7 +797,7 @@ export default function Home() {
         available_quantity: item.available_quantity ?? null,
       })));
     }
-    if (categoryResult.error) errors.push(`Equipment categories could not be loaded: ${categoryResult.error.message}`);
+    if (categoryResult.error) errors.push(["Equipment categories could not be loaded:", categoryResult.error]);
     else setCategoryOptions((current) => {
       const next = categoryResult.data || [];
       return current.length === next.length && current.every((item, index) => item.category_id === next[index]?.category_id)
@@ -799,18 +806,18 @@ export default function Home() {
     });
     if (!isCustodianUser && borrowerResult.error) {
       setBorrowerId(null);
-      errors.push(`Your borrower record could not be found: ${borrowerResult.error.message}`);
+      errors.push(["Your borrower record could not be found:", borrowerResult.error]);
     } else if (!isCustodianUser) {
       setBorrowerId(borrowerResult.data || null);
-      if (!borrowerResult.data) errors.push("No active borrower record is linked to your account. An administrator or property custodian must approve your borrower access before you can submit or view borrowing requests.");
+      if (!borrowerResult.data) borrowerMissing = true;
     } else {
       setBorrowerId(null);
     }
     if (borrowingResult.error) {
-      errors.push(`Borrowing records could not be loaded: ${borrowingResult.error.message}`);
+      errors.push(["Borrowing records could not be loaded:", borrowingResult.error]);
     } else {
       const returnRequestsResult = await client.from("return_requests").select("borrowing_id, status");
-      if (returnRequestsResult.error) errors.push(`Return requests could not be loaded: ${returnRequestsResult.error.message}`);
+      if (returnRequestsResult.error) errors.push(["Return requests could not be loaded:", returnRequestsResult.error]);
       const openReturnIds = new Set((returnRequestsResult.data || []).filter((item) => item.status === "pending").map((item) => item.borrowing_id));
       setBorrowings((borrowingResult.data || []).map((item) => {
         const borrower = item.borrowers;
@@ -855,7 +862,7 @@ export default function Home() {
         };
       }));
     }
-    if (reservationResult.error) errors.push(`Reservations could not be loaded: ${reservationResult.error.message}`);
+    if (reservationResult.error) errors.push(["Reservations could not be loaded:", reservationResult.error]);
     else setReservations((reservationResult.data || []).map((item) => ({
       ...item,
       id: item.reservation_id,
@@ -874,9 +881,9 @@ export default function Home() {
       quantity: item.quantity || 1,
     })));
     if (feedbackResult.error) {
-      errors.push(`Feedback discussions could not be loaded: ${feedbackResult.error.message}`);
+      errors.push(["Feedback discussions could not be loaded:", feedbackResult.error]);
     } else if (repliesResult.error) {
-      errors.push(`Feedback replies could not be loaded: ${repliesResult.error.message}`);
+      errors.push(["Feedback replies could not be loaded:", repliesResult.error]);
     } else {
       const repliesByThread = (repliesResult.data || []).reduce((all, reply) => {
         all[reply.thread_id] = [...(all[reply.thread_id] || []), reply];
@@ -889,7 +896,7 @@ export default function Home() {
     }
     if (isAdminUser) {
       const memberResult = await client.from("profiles").select("*").order("full_name");
-      if (memberResult.error) errors.push(`Member management could not be loaded: ${memberResult.error.message}`);
+      if (memberResult.error) errors.push(["Member management could not be loaded:", memberResult.error]);
       else setMembers((memberResult.data || []).map((member) => ({
         ...member,
         display_name: member.display_name || member.full_name || "",
@@ -904,31 +911,20 @@ export default function Home() {
         .eq("account_status", "pending")
         .order("created_at", { ascending: true });
       if (pendingAccountsResult.error) {
-        errors.push(`Pending accounts could not be loaded: ${pendingAccountsResult.error.message}`);
+        errors.push(["Pending accounts could not be loaded:", pendingAccountsResult.error]);
       } else {
         setPendingAccounts(pendingAccountsResult.data || []);
       }
     } else {
       setPendingAccounts([]);
     }
-    if (isEquipmentManager) {
-      let auditQuery = client.from("equipment_audit_log").select("*")
-        .order("changed_at", { ascending: false }).order("id", { ascending: false });
-      if (auditSearch.trim()) auditQuery = auditQuery.ilike("asset_code", `%${auditSearch.trim()}%`);
-      const auditResult = await auditQuery.range(auditPage * 20, auditPage * 20 + 19);
-      if (auditResult.error) errors.push(`Equipment change history could not be loaded: ${auditResult.error.message}`);
-      else setEquipmentAudit((auditResult.data || []).map((entry) => ({
-        ...entry,
-        id: entry.id,
-        equipment_id: entry.equipment_id,
-        asset_tag: entry.asset_code || `Equipment #${entry.equipment_id}`,
-      })));
-    } else {
-      setEquipmentAudit([]);
+    if (errors.length) {
+      errors.forEach(([context, loadError]) => console.error(context, loadError));
+      if (!borrowerMissing) setError("Some information could not be loaded. Please try again.");
     }
-    if (errors.length) setError(`${errors.join(" ")} Check that the Supabase schema migrations in supabase/migrations have been applied in order.`);
+    if (borrowerMissing) setError("No active borrower record is linked to your account. An administrator or property custodian must approve your borrower access before you can submit or view borrowing requests.");
     setLoading(false);
-  }, [auditPage, auditSearch, borrowingsPage, borrowingsSearch, category, categoryOptions, equipmentPageCursors, equipmentPageIndex, notificationSearch, notificationsPage, search]);
+  }, [borrowingsPage, borrowingsSearch, category, categoryOptions, equipmentPageCursors, equipmentPageIndex, notificationSearch, notificationsPage, search]);
 
   useEffect(() => {
     if (!supabase) return undefined;
@@ -952,7 +948,6 @@ export default function Home() {
         setReservations([]);
         setMembers([]);
         setPendingAccounts([]);
-        setEquipmentAudit([]);
         setFeedbackThreads([]);
         setNotifications([]);
         setUnreadNotificationCount(0);
@@ -971,6 +966,39 @@ export default function Home() {
   const isPropertyCustodian = profile?.role === "property_custodian";
   const isEquipmentManager = isAdmin || isPropertyCustodian;
   const isEquipmentStaff = isAdmin;
+
+  useEffect(() => {
+    if (!supabase || profile?.account_status !== "active" || !["admin", "property_custodian"].includes(profile?.role)) {
+      setPendingRequestCount(0);
+      return undefined;
+    }
+
+    let active = true;
+    async function refreshPendingRequestCount() {
+      try {
+        const [borrowingCount, reservationCount] = await Promise.all([
+          supabase.from("borrowings").select("borrowing_id", { count: "exact", head: true }).eq("transaction_status", "requested"),
+          supabase.from("reservations").select("reservation_id", { count: "exact", head: true }).eq("status", "pending"),
+        ]);
+        if (!active) return;
+        if (borrowingCount.error || reservationCount.error) {
+          if (borrowingCount.error) console.error("Pending borrowing request count could not be loaded:", borrowingCount.error);
+          if (reservationCount.error) console.error("Pending reservation request count could not be loaded:", reservationCount.error);
+          return;
+        }
+        setPendingRequestCount((borrowingCount.count || 0) + (reservationCount.count || 0));
+      } catch (countError) {
+        if (active) console.error("Pending request counts could not be loaded:", countError);
+      }
+    }
+
+    refreshPendingRequestCount();
+    const interval = window.setInterval(refreshPendingRequestCount, 60_000);
+    return () => {
+      active = false;
+      window.clearInterval(interval);
+    };
+  }, [supabase, profile?.account_status, profile?.role]);
 
   useEffect(() => {
     if (!profile) return;
@@ -1023,15 +1051,10 @@ export default function Home() {
   }
 
   const counts = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    const currentLoans = borrowings.filter((item) => ["approved", "released", "overdue", "return_requested"].includes(item.status));
     return {
       available: equipment.filter((item) => item.status === "available").length,
-      borrowed: currentLoans.length,
-      dueSoon: currentLoans.filter((item) => item.expected_return && String(item.expected_return).slice(0, 10) <= today).length,
-      pending: borrowings.filter((item) => item.status === "requested").length + reservations.filter((item) => item.status === "pending").length,
     };
-  }, [equipment, borrowings, reservations]);
+  }, [equipment]);
 
   async function refresh() {
     if (supabase && user) await loadData(supabase, user);
@@ -1063,7 +1086,10 @@ export default function Home() {
     try {
       if (member.profile_photo_path) {
         const { error: storageError } = await supabase.storage.from("profile-photos").remove([member.profile_photo_path]);
-        if (storageError) throw new Error(`The profile photo could not be deleted; borrower details were not changed. ${storageError.message}`);
+        if (storageError) {
+          console.error("The profile photo could not be deleted:", storageError);
+          throw new Error("The profile photo could not be deleted; borrower details were not changed.");
+        }
       }
       const { error: anonymizeError } = await supabase.rpc("admin_anonymize_inactive_borrower", { p_user_id: member.id });
       if (anonymizeError) throw anonymizeError;
@@ -1272,13 +1298,19 @@ export default function Home() {
         if (photoError) {
           if (uploadedPath) {
             const { error: cleanupError } = await supabase.storage.from("profile-photos").remove([uploadedPath]);
-            if (cleanupError) throw new Error(`Profile photo update failed and the uploaded image could not be cleaned up: ${cleanupError.message}`);
+            if (cleanupError) {
+              console.error("The uploaded profile photo could not be cleaned up:", cleanupError);
+              throw new Error("The profile photo update failed and the uploaded image could not be cleaned up.");
+            }
           }
           throw photoError;
         }
         if (profile.profile_photo_path && profile.profile_photo_path !== newPhotoPath) {
           const { error: cleanupError } = await supabase.storage.from("profile-photos").remove([profile.profile_photo_path]);
-          if (cleanupError) throw new Error(`Profile updated, but the previous photo could not be removed: ${cleanupError.message}`);
+          if (cleanupError) {
+            console.error("The previous profile photo could not be removed:", cleanupError);
+            throw new Error("Your profile was updated, but the previous photo could not be removed.");
+          }
         }
       }
     }, "Account settings saved.");
@@ -1417,6 +1449,7 @@ export default function Home() {
               <Icon size={18} /><span>{label}</span>
               {id === "loans" && myBorrowings.some((item) => item.status === "requested") && <i className="nav-badge">!</i>}
               {id === "pending-accounts" && pendingAccounts.length > 0 && <i className="nav-badge">{pendingAccounts.length}</i>}
+              {id === "requests" && pendingRequestCount > 0 && <i className="nav-badge">{pendingRequestCount > 99 ? "99+" : pendingRequestCount}</i>}
             </button>
           ))}
           {isAdmin && (
@@ -1425,7 +1458,7 @@ export default function Home() {
               {ADMIN_ITEMS.map(({ id, label, icon: Icon }) => (
                 <button key={id} className={`nav-item ${view === id ? "active" : ""}`} onClick={() => { setView(id); setMobileNav(false); }}>
                   <Icon size={18} /><span>{label}</span>
-                  {id === "requests" && counts.pending > 0 && <i className="nav-badge">{counts.pending}</i>}
+                  {id === "requests" && pendingRequestCount > 0 && <i className="nav-badge">{pendingRequestCount > 99 ? "99+" : pendingRequestCount}</i>}
                   {id === "pending-accounts" && pendingAccounts.length > 0 && <i className="nav-badge">{pendingAccounts.length}</i>}
                 </button>
               ))}
@@ -1441,7 +1474,7 @@ export default function Home() {
         </div>
         <div className="sidebar-user">
           <ProfileAvatar name={displayName} photoUrl={profile.profile_photo_url} />
-          <div><strong>{displayName}</strong><span>          {userRole === "admin" ? "Administrator" : userRole === "property_custodian" ? "Property custodian" : userRole === "staff" ? "Staff member" : "Role unavailable"}</span></div>
+          <div><strong>{displayName}</strong><span>{userRole === "admin" ? "Administrator" : userRole === "property_custodian" ? "Property custodian" : userRole === "staff" ? "Borrower" : "Role unavailable"}</span></div>
         </div>
       </aside>
 
@@ -1527,26 +1560,21 @@ export default function Home() {
                 <button onClick={() => setView(isEquipmentManager ? "requests" : "equipment")}>{isEquipmentManager ? "Review requests" : "Browse equipment"} <ArrowUpRight size={15} /></button>
                 <div className="welcome-decoration" />
               </section>
+              <OverviewStatistics
+                supabase={supabase}
+                isManager={isEquipmentManager}
+                borrowerId={borrowerId}
+                pendingRequestCount={pendingRequestCount}
+                loading={loading}
+              />
               {isEquipmentManager ? (
                 <>
-                  <section className="metric-grid" aria-label="Equipment operations summary">
-                    <article className="metric-card"><div className="metric-top"><span>Available now</span><span className="metric-icon metric-green"><Package size={18} /></span></div><strong>{loading ? "—" : counts.available}</strong><small>Equipment ready to request</small></article>
-                    <article className="metric-card"><div className="metric-top"><span>Inventory records</span><span className="metric-icon metric-amber"><HardDrive size={18} /></span></div><strong>{loading ? "—" : equipment.length}</strong><small>Active equipment items</small></article>
-                    <article className="metric-card"><div className="metric-top"><span>Feedback topics</span><span className="metric-icon metric-blue"><MessageSquare size={18} /></span></div><strong>{loading ? "—" : feedbackThreads.length}</strong><small>Community discussions</small></article>
-                    <article className="metric-card"><div className="metric-top"><span>Inventory updates</span><span className="metric-icon metric-rose"><Activity size={18} /></span></div><strong>{loading ? "—" : equipmentAudit.length}</strong><small>Recent recorded changes</small></article>
-                  </section>
                   <div className="section-title"><div><h2>Equipment management</h2><p>Review stock and keep the active inventory current.</p></div><button className="text-action" onClick={() => setView("equipment")}>Manage equipment <ArrowUpRight size={15} /></button></div>
                   <div className="section-title"><div><h2>Borrower requests</h2><p>Search borrowing and reservation requests by borrower name.</p></div><button className="text-action" onClick={() => setView("requests")}>Find a borrower <ArrowUpRight size={15} /></button></div>
                   <div className="section-title"><div><h2>Feedback and improvements</h2><p>Discuss issues and track ideas from the equipment community.</p></div><button className="text-action" onClick={() => setView("feedback")}>Open feedback <ArrowUpRight size={15} /></button></div>
                 </>
               ) : (
                 <>
-                  <section className="metric-grid" aria-label="Equipment summary">
-                    <article className="metric-card"><div className="metric-top"><span>Available now</span><span className="metric-icon metric-green"><Package size={18} /></span></div><strong>{loading ? "—" : counts.available}</strong><small>Ready to request</small></article>
-                    <article className="metric-card"><div className="metric-top"><span>Currently borrowed</span><span className="metric-icon metric-amber"><ArrowLeftRight size={18} /></span></div><strong>{loading ? "—" : counts.borrowed}</strong><small>Approved or checked out</small></article>
-                    <article className="metric-card"><div className="metric-top"><span>Due today / overdue</span><span className="metric-icon metric-rose"><Clock3 size={18} /></span></div><strong>{loading ? "—" : counts.dueSoon}</strong><small>Items needing attention</small></article>
-                    <article className="metric-card"><div className="metric-top"><span>Requests to review</span><span className="metric-icon metric-blue"><Bell size={18} /></span></div><strong>{loading ? "—" : counts.pending}</strong><small>{isEquipmentStaff ? "Awaiting your review" : "Across your requests"}</small></article>
-                  </section>
                   <div className="section-title"><div><h2>Find equipment</h2><p>Browse what’s available for your next project</p></div><button className="text-action" onClick={() => setView("equipment")}>Explore library <ArrowUpRight size={15} /></button></div>
                   <div className="equipment-grid compact-grid">
                     {(equipment.filter((item) => item.status === "available").slice(0, 3)).map((item) => <EquipmentCard key={item.id} item={item} canRequest={false} onBorrow={(selected) => setModal({ kind: "borrow", item: selected })} onReserve={(selected) => setModal({ kind: "reservation", item: selected })} />)}
@@ -1732,7 +1760,7 @@ export default function Home() {
                     <div className="equipment-image-preview"><img src={modal.item.image_url} alt={`Current picture of ${modal.item.name}`} /><span>Current picture</span></div>
                   )}
                   {modal.kind === "edit-equipment" && modal.item.image_url && <label className="checkbox-label"><input name="remove_image" type="checkbox" /><span>Remove current picture</span></label>}
-                  {modal.kind === "edit-equipment" && <label><span>Condition</span><select name="condition_status" defaultValue={modal.item.condition_status}><option value="good">Good</option><option value="fair">Fair</option><option value="damaged">Damaged</option></select></label>}
+                  {modal.kind === "edit-equipment" && <label><span>Condition</span><select name="condition_status" defaultValue={modal.item.condition_status === "fair" ? "" : modal.item.condition_status} required><option value="" disabled>Choose condition</option><option value="good">Good</option><option value="damaged">Damaged</option></select>{modal.item.condition_status === "fair" && <small className="field-hint">Previously saved as Fair. Choose Good or Damaged.</small>}</label>}
                   {modal.kind === "edit-equipment" && <label><span>Availability</span><select name="status" defaultValue={modal.item.availability_status}><option value="available">Available</option><option value="maintenance">Maintenance</option><option value="retired">Retired</option>{["borrowed", "reserved"].includes(modal.item.availability_status) && <option value={modal.item.availability_status}>{modal.item.availability_status === "borrowed" ? "Borrowed" : "Reserved"} (manage through requests)</option>}</select></label>}
                   <div className="modal-actions"><button type="button" className="button-secondary" onClick={() => setModal(null)}>Cancel</button><button className="button-primary" disabled={busy || (!categoryOptions.length && modal.kind === "add-equipment")} type="submit">{busy ? "Saving…" : modal.kind === "edit-equipment" ? "Save changes" : "Add to inventory"} {modal.kind === "edit-equipment" ? <Check size={15} /> : <Plus size={15} />}</button></div>
                 </form>
@@ -1763,7 +1791,7 @@ export default function Home() {
                         <label className="checkbox-label"><input name="accept_agreement" type="checkbox" required /><span>I have read and agree to the borrower agreement above.</span></label>
                       </section>
                       : <p className="agreement-accepted"><CheckCircle2 size={16} /> You have accepted the current borrower agreement.</p>
-                    : <p className="feedback feedback-error" role="alert">The current borrower agreement is unavailable. Requests are disabled until staff publish or restore it.</p>)}
+                    : <p className="feedback feedback-error" role="alert">The current borrower agreement is unavailable. Requests are disabled until an administrator or property custodian publishes or restores it.</p>)}
                   <div className="modal-info"><ShieldCheck size={19} /><div><strong>Requests are reviewed by the equipment team</strong><span>You’ll see status updates in My equipment.</span></div></div>
                   <div className="modal-actions"><button type="button" className="button-secondary" onClick={() => setModal(null)} disabled={busy}>Cancel</button><button className="button-primary" disabled={busy || (profile?.role === "staff" && !activeAgreement)} type="submit">{busy ? "Submitting…" : "Submit request"} <ArrowUpRight size={15} /></button></div>
                 </form>
@@ -1886,8 +1914,8 @@ function BorrowingConditionDetails({ borrowingItems = [] }) {
         <small key={item.borrowing_item_id}>
           {item.equipment?.equipment_name ? `${item.equipment.equipment_name}: ` : ""}
           {[
-            item.condition_at_release ? `Condition upon release: ${item.condition_at_release}` : "",
-            item.condition_at_return ? `Condition upon return: ${item.condition_at_return}` : "",
+            item.condition_at_release ? `Condition upon release: ${String(item.condition_at_release).replaceAll("_", " ")}` : "",
+            item.condition_at_return ? `Condition upon return: ${String(item.condition_at_return).replaceAll("_", " ")}` : "",
           ].filter(Boolean).join(" · ")}
         </small>
       ))}
@@ -1979,27 +2007,31 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
       ]);
       if (!active) return;
       if (settingsResult.error) {
-        setSettingsError(`Reservation pickup settings could not be loaded: ${getErrorMessage(settingsResult.error)}`);
+        console.error("Reservation pickup settings could not be loaded:", settingsResult.error);
+        setSettingsError("Reservation pickup settings are unavailable right now.");
       } else if (!settingsResult.data) {
-        setSettingsError("Reservation pickup settings are unavailable.");
+        setSettingsError("Reservation pickup settings are unavailable right now.");
       } else {
         setPickupGraceMinutes(String(settingsResult.data.pickup_grace_period_minutes));
       }
-      const errors = [];
+      let hasLoadError = false;
       if (overdueResult.error) {
-        errors.push(`The overdue list could not be loaded: ${getErrorMessage(overdueResult.error)}`);
+        console.error("The overdue list could not be loaded:", overdueResult.error);
+        hasLoadError = true;
         setOverdueItems([]);
       } else {
         setOverdueItems(overdueResult.data || []);
       }
       if (reportResult.error) {
-        errors.push(`Damage and loss reports could not be loaded: ${getErrorMessage(reportResult.error)}`);
+        console.error("Damage and loss reports could not be loaded:", reportResult.error);
+        hasLoadError = true;
         setDamageReports([]);
       } else {
         setDamageReports(reportResult.data || []);
       }
       if (historyResult.error) {
-        errors.push(`Returned borrowing history could not be loaded: ${getErrorMessage(historyResult.error)}`);
+        console.error("Returned borrowing history could not be loaded:", historyResult.error);
+        hasLoadError = true;
         setReturnedHistory([]);
         setHistoryHasMore(false);
       } else {
@@ -2026,9 +2058,15 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
         }));
       }
       setHistoryLoading(false);
-      setWorkflowError(errors.join(" "));
+      setWorkflowError(hasLoadError ? "Some request information is unavailable right now." : "");
     }
-    loadOperationalData();
+    loadOperationalData().catch((loadError) => {
+      console.error("Request operations could not be loaded:", loadError);
+      if (active) {
+        setHistoryLoading(false);
+        setWorkflowError("Request information is unavailable right now.");
+      }
+    });
     return () => { active = false; };
   }, [canReview, supabase, workflowRefreshKey, overduePage, overdueSearch, historyPage]);
 
@@ -2087,7 +2125,8 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
             .from("item-condition-photos")
             .remove([photoPath]);
           if (cleanupError) {
-            throw new Error(`${getErrorMessage(error)} The uploaded condition photo could not be removed: ${cleanupError.message}`);
+            console.error("The uploaded condition photo could not be removed:", cleanupError);
+            throw new Error("The action failed and the uploaded condition photo could not be removed.");
           }
         }
         throw error;
@@ -2235,7 +2274,7 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
         </div>
       )}
       <div className="section-title"><div><h2>Released — awaiting return</h2><p>Record the received condition; damage or loss reports are created when applicable.</p></div><span className="record-count">{releasedBorrowings.length} released</span></div>
-      {!releasedBorrowings.length ? <EmptyState title="No released equipment awaiting return" copy={query ? "Try another first or last name." : "Released equipment will appear here until staff record its return."} /> : (
+      {!releasedBorrowings.length ?       <EmptyState title="No released equipment awaiting return" copy={query ? "Try another first or last name." : "Released equipment will appear here until an administrator or custodian records its return."} /> : (
         <div className="admin-request-list">
           {releasedBorrowings.map((item) => (
             <article className="admin-request" key={item.id}>
@@ -2298,7 +2337,7 @@ function AdminRequests({ borrowings, reservations, search: borrowerSearch, onSea
         </article>}
         <nav className="unit-pagination" aria-label="Overdue item pages"><span>Page {overduePage + 1} · {overdueItems.length} items</span><div><button className="button-secondary" type="button" onClick={() => setOverduePage((page) => Math.max(0, page - 1))} disabled={overduePage === 0}><ArrowLeft size={14} /> Previous</button><button className="button-secondary" type="button" onClick={() => setOverduePage((page) => page + 1)} disabled={overdueItems.length < 20}>Next <ArrowRight size={14} /></button></div></nav>
         <div className="section-title"><div><h2>Damage and loss reports</h2><p>Track follow-up and resolution for reported damage or lost items.</p></div><span className="record-count">{damageReports.length} reports</span></div>
-        {!damageReports.length ? <EmptyState title="No damage or loss reports" copy="Reports will be created when staff record damaged or lost equipment." /> : (
+        {!damageReports.length ? <EmptyState title="No damage or loss reports" copy="Reports will be created when an administrator or custodian records damaged or lost equipment." /> : (
           <div className="admin-request-list">
             {damageReports.map((report) => <DamageLossReportControl
               key={report.report_id}
@@ -2399,7 +2438,10 @@ function WorkflowConditionAction({ stage, busy, onSubmit, supabase, item, refres
     let active = true;
     supabase.rpc("list_borrowing_unit_assignments", { p_borrowing_id: item.id }).then(({ data, error }) => {
       if (!active) return;
-      if (error) setUnitError(error.message);
+      if (error) {
+        console.error("Unit assignments could not be loaded:", error);
+        setUnitError("Unit assignments are unavailable right now.");
+      }
       else setAssignedUnits((data || []).filter((assignment) => assignment.unit_status === "borrowed"));
     });
     return () => { active = false; };
@@ -2411,7 +2453,8 @@ function WorkflowConditionAction({ stage, busy, onSubmit, supabase, item, refres
     setUnitError("");
     const { data, error } = await supabase.rpc("lookup_equipment_unit_by_tag", { p_asset_tag: assetTag });
     if (error) {
-      setUnitError(error.message);
+      console.error("The equipment unit could not be found:", error);
+      setUnitError("The equipment unit could not be found. Check the asset tag and try again.");
       return;
     }
     const unit = data?.[0];
@@ -2461,9 +2504,7 @@ function WorkflowConditionAction({ stage, busy, onSubmit, supabase, item, refres
         <span>{isRelease ? "Condition at release" : "Condition at return"}</span>
         <select value={condition} onChange={(event) => setCondition(event.target.value)} disabled={busy}>
           <option value="good">Good</option>
-          <option value="fair">Fair</option>
           <option value="damaged">Damaged</option>
-          {!isRelease && <option value="lost">Lost</option>}
         </select>
       </label>
       {unitItems.length > 0 && (isRelease ? (
@@ -2560,7 +2601,8 @@ function UnitTagField({ label, value, disabled, onChange, onLookup }) {
         };
         detectFrame();
       } catch (scanError) {
-        setCameraError(scanError.message || "Camera access failed. Enter the asset tag manually.");
+        console.error("QR scanner could not access the camera:", scanError);
+        setCameraError("Camera access failed. Enter the asset tag manually.");
         setCameraOpen(false);
       }
     }
@@ -2756,6 +2798,12 @@ function CurrentlyBorrowedWorkspace({ rows, categories, loading }) {
 }
 
 function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, busy, onCreate, onReply, onDeleteReply, onDeleteThread, onStatusChange }) {
+  const categoryLabels = {
+    issue: "Issue",
+    suggestion: "Suggestion",
+    question: "Question",
+    other: "Other",
+  };
   const statusLabels = {
     open: "Open",
     under_review: "Under review",
@@ -2769,7 +2817,7 @@ function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, bus
         <form className="feedback-form" onSubmit={onCreate}>
           <label><span>Topic</span><input name="title" placeholder="A short title for your feedback" maxLength={140} required /></label>
           <div className="form-row">
-            <label><span>Type</span><select name="category" defaultValue="suggestion"><option value="suggestion">Suggestion</option><option value="issue">Issue</option><option value="question">Question</option><option value="other">Other</option></select></label>
+            <label><span>Category</span><select name="category" defaultValue="suggestion"><option value="issue">Issue</option><option value="suggestion">Suggestion</option><option value="question">Question</option></select></label>
             <label className="feedback-message-label"><span>Your message</span><textarea name="message" placeholder="Share details so members and admins can discuss it…" rows="3" maxLength={4000} required /></label>
           </div>
           <div className="feedback-submit-row"><small>Visible to signed-in members and admins.</small><button className="button-primary" type="submit" disabled={busy}>{busy ? "Posting…" : "Post feedback"} <Send size={14} /></button></div>
@@ -2782,7 +2830,7 @@ function FeedbackBoard({ threads, currentUserId, isAdmin, canManageFeedback, bus
           {threads.map((thread) => (
             <article className="feedback-thread" key={thread.id}>
               <header className="feedback-thread-header">
-                <div><span className={`feedback-category category-${thread.category}`}>{thread.category.replaceAll("_", " ")}</span><span className={`feedback-status status-${thread.status}`}>{statusLabels[thread.status]}</span></div>
+                <div><span className={`feedback-category category-${thread.category}`}>{categoryLabels[thread.category] || thread.category.replaceAll("_", " ")}</span><span className={`feedback-status status-${thread.status}`}>{statusLabels[thread.status]}</span></div>
                 <div className="feedback-thread-controls">
                   {canManageFeedback && <label className="feedback-status-control"><span className="sr-only">Update discussion status</span><select value={thread.status} disabled={busy} onChange={(event) => onStatusChange(thread.id, event.target.value)}>{Object.entries(statusLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>}
                   {isAdmin && <button className="feedback-delete-button" type="button" aria-label={`Delete feedback thread ${thread.title}`} title="Delete thread and replies" disabled={busy} onClick={() => onDeleteThread(thread)}><Trash2 size={14} /></button>}
@@ -2830,7 +2878,7 @@ function MemberTable({ members, currentUserId, busy, runAction, onAnonymize, sup
                   "Member role updated.",
                 )}
               >
-                <option value="staff">Staff member</option>
+                <option value="staff">Borrower</option>
                 <option value="property_custodian">Property custodian</option>
                 <option value="admin">Administrator</option>
               </select>
